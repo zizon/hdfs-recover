@@ -25,9 +25,13 @@ public class TestLogAggregator {
     public void test() {
         URI nameservice = URI.create("test-cluster://10.202.77.200:8020,10.202.77.201:8020");
 
-        LogAggregator aggregator = new LogAggregator(nameservice);
+        LogAggregator aggregator = new LogAggregator(nameservice,"hdfs");
 
-        aggregator.logservers().transform((promises) -> {
+        long num_of_transactions = StreamSupport.stream(aggregator.spliterator(), false)
+                .count();
+        LOGGER.info("number of transations:" + num_of_transactions);
+        /*
+        aggregator.logServers().transform((promises) -> {
             LOGGER.info(promises.size());
             promises.forEach((promise) -> {
                 promise.transform((server) -> {
@@ -39,5 +43,6 @@ public class TestLogAggregator {
 
             return null;
         }).join();
+        */
     }
 }

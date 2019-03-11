@@ -3,16 +3,12 @@ package com.sf.misc.hadoop.recover;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hdfs.protocol.proto.JournalProtocolProtos;
-import org.apache.hadoop.hdfs.protocolPB.PBHelper;
-import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocol;
-import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.qjournal.server.GetJournalEditServlet;
 import org.apache.hadoop.hdfs.server.namenode.EditLogFileInputStream;
 import org.apache.hadoop.hdfs.server.namenode.EditLogInputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
-import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 
 import java.io.IOException;
@@ -20,8 +16,9 @@ import java.io.UncheckedIOException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.Iterator;
-import java.util.concurrent.atomic.AtomicLong;
 
 public class LogSegment implements Iterable<FSEditLogOp> {
 
@@ -53,28 +50,75 @@ public class LogSegment implements Iterable<FSEditLogOp> {
         return to;
     }
 
-    @Override
-    public Iterator<FSEditLogOp> iterator() {
-        EditLogInputStream stream = EditLogFileInputStream.fromUrl(
-                URL_CONNECTION_FACTORY,
-                fetch,
-                from,
-                to,
-                true
-        );
-
+    public static Iterator<FSEditLogOp> merge(Collection<LogSegment> segments) {
         return new Iterator<FSEditLogOp>() {
-            FSEditLogOp op = null;
-            AtomicLong counter = new AtomicLong(0);
+            Iterator<FSEditLogOp> delegate = LazyIterators.concat(
+                    segments.stream()
+                            .sorted(Comparator.comparing(LogSegment::from))
+                            .map((segment) -> {
+                                return (Promise.PromiseSupplier<Iterator<FSEditLogOp>>) () -> segment.iterator();
+                            })
+            );
+
+            FSEditLogOp op;
+            long last_txid = HdfsConstants.INVALID_TXID;
 
             @Override
             public boolean hasNext() {
-                op = nextOp(stream);
-                counter.incrementAndGet();
-                if (op == null) {
-                    LOGGER.info("transation:" + counter.get());
+                if (!delegate.hasNext()) {
+                    return false;
                 }
-                return op != null;
+
+                // skip to appropriate txid
+                FSEditLogOp next = delegate.next();
+                while (!next.hasTransactionId() || next.getTransactionId() <= last_txid) {
+                    if (delegate.hasNext()) {
+                        next = delegate.next();
+                        continue;
+                    }
+
+                    return false;
+                }
+
+                op = next;
+                return true;
+            }
+
+            @Override
+            public FSEditLogOp next() {
+                FSEditLogOp result = op;
+                op = null;
+                return result;
+            }
+        };
+    }
+
+    @Override
+    public Iterator<FSEditLogOp> iterator() {
+        return new Iterator<FSEditLogOp>() {
+            Promise<EditLogInputStream> stream = Promise.light(
+                    () -> EditLogFileInputStream.fromUrl(
+                            URL_CONNECTION_FACTORY,
+                            fetch,
+                            from,
+                            to,
+                            true
+                    )
+            );
+            FSEditLogOp op;
+
+            @Override
+            public boolean hasNext() {
+                try {
+                    op = FSEditLogOpSniper.copy(stream.join().readOp());
+
+                    if (op != null) {
+                        return true;
+                    }
+                    return false;
+                } catch (IOException e) {
+                    throw new UncheckedIOException("fail to tail log:" + this, e);
+                }
             }
 
             @Override
@@ -82,14 +126,6 @@ public class LogSegment implements Iterable<FSEditLogOp> {
                 return op;
             }
         };
-    }
-
-    protected FSEditLogOp nextOp(EditLogInputStream stream) {
-        try {
-            return stream.readOp();
-        } catch (IOException e) {
-            throw new UncheckedIOException("fail to read stream:" + stream, e);
-        }
     }
 
     @Override

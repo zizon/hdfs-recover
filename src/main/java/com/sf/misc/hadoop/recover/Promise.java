@@ -477,6 +477,7 @@ public class Promise<T> extends CompletableFuture<T> {
                     promise.complete(final_value);
                 }, usingExecutor().executor());
             } catch (Throwable throwable) {
+                LOGGER.info("value:" + value + " function:" + function);
                 promise.completeExceptionally(throwable);
             }
 

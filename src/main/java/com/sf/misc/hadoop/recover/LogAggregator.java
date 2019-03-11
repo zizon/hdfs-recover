@@ -1,6 +1,5 @@
 package com.sf.misc.hadoop.recover;
 
-import com.sun.org.apache.bcel.internal.generic.RETURN;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -11,29 +10,32 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.NameNodeProxies;
 import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
-import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.ipc.RPC;
+import org.apache.hadoop.security.UserGroupInformation;
 
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
-
 
 public class LogAggregator {
 
     public static final Log LOGGER = LogFactory.getLog(LogAggregator.class);
 
     protected final URI nameservice;
+    protected final String runas;
 
-    public LogAggregator(URI nameservice) {
+    public LogAggregator(URI nameservice, String runas) {
         this.nameservice = nameservice;
+        this.runas = runas;
     }
 
-    public Promise<List<Promise<LogServer>>> logservers() {
+    protected Promise<List<Promise<LogServer>>> logServers() {
         Promise<NamespaceInfo> namespace = findNameSpace(nameservice);
         Promise<URI> jouranl_server = findJournalServer(nameservice);
 
@@ -41,8 +43,11 @@ public class LogAggregator {
             String jouranl_id = journal.getPath().substring(1);
             return Arrays.stream(journal.getAuthority().split(";")).parallel()
                     .map((part) -> {
-                        URI rpc = URI.create("http://" + part);
+                        // trick to parse rpc server url
+                        URI rpc = URI.create("any://" + part);
 
+                        LOGGER.debug("create log server:" + rpc);
+                        // closure to produce log server
                         return (Promise.PromiseFunction<NamespaceInfo, LogServer>) (info) -> new LogServer(
                                 new InetSocketAddress(rpc.getHost(), rpc.getPort()),
                                 jouranl_id,
@@ -62,7 +67,9 @@ public class LogAggregator {
         // create namnode protocol
         Promise<NamenodeProtocol> namenode = Promise.light(() -> {
             URI uri = URI.create(configuration.get(CommonConfigurationKeys.FS_DEFAULT_NAME_KEY));
-            return NameNodeProxies.createProxy(configuration, uri, NamenodeProtocol.class).getProxy();
+            return UserGroupInformation.createRemoteUser(runas).doAs((PrivilegedExceptionAction<NamenodeProtocol>) () -> {
+                return NameNodeProxies.createProxy(configuration, uri, NamenodeProtocol.class).getProxy();
+            });
         });
 
         // maybe set namespace info
@@ -74,24 +81,27 @@ public class LogAggregator {
         LOGGER.info(nameservice);
         Promise<Configuration>[] racing = Arrays.stream(nameservice.getAuthority().split(","))
                 .map((host_with_port) -> {
-                    return host_with_port.split(":")[0];
+                    return URI.create("any://" + host_with_port).getHost();
                 })
                 .map((host) -> {
                     return URI.create("http://" + host + ":50070/conf");
                 })
                 .map((uri) -> {
-                    Promise<HttpURLConnection> connection = Promise.light(() -> {
-                        return (HttpURLConnection) uri.toURL().openConnection();
+                    // ask namenode
+                    return Promise.light(() -> {
+                        HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
+                        try {
+                            Configuration configuration = new Configuration();
+                            configuration.addResource(connection.getInputStream());
+
+                            // trigger load
+                            configuration.size();
+
+                            return configuration;
+                        } finally {
+                            Optional.ofNullable(connection).ifPresent(HttpURLConnection::disconnect);
+                        }
                     });
-
-                    return connection.transform((http) -> {
-                        Configuration configuration = new Configuration();
-                        configuration.addResource(http.getInputStream());
-
-                        // trigger load
-                        configuration.size();
-                        return configuration;
-                    }).addListener(() -> connection.join().disconnect());
                 })
                 .<Promise<Configuration>>toArray(Promise[]::new);
 
@@ -134,5 +144,4 @@ public class LogAggregator {
 
         return generated;
     }
-
 }
