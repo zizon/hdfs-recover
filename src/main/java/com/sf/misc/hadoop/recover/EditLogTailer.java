@@ -4,27 +4,15 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.BiConsumer;
-import java.util.function.BinaryOperator;
-import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
-import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 public class EditLogTailer {
@@ -55,14 +43,16 @@ public class EditLogTailer {
                     Promise<?> sync_log = archive.latest().lastTransactionID().transform((txid) -> {
                         txid = Math.max(txid, last_txid.get());
                         LOGGER.info("start tailing... txid:" + txid);
-                        long updated = StreamSupport.stream(new Iterable<FSEditLogOp>() {
-                            @Override
-                            public Iterator<FSEditLogOp> iterator() {
-                                return aggregator.iterator();
-                            }
-                        }.spliterator(), true).parallel()
+
+                        final long start = txid;
+                        long updated = StreamSupport.stream(
+                                ((Iterable<FSEditLogOp>) () -> {
+                                    return aggregator.skipUntil(start);
+                                }).spliterator(),
+                                true
+                        ).parallel()
                                 .map((op) -> {
-                                    if (op_filter.test(op)) {
+                                    if (op.getTransactionId() > start && op_filter.test(op)) {
                                         try {
                                             OutputStream stream = archive.streamForOp(op).join();
                                             stream.write(line_serializer.apply(op));

@@ -77,22 +77,22 @@ public class LazyIterators {
             Optional<T> resolveNext() {
                 peekables.removeIf(Peekable::isEmtpy);
 
-                //2. peek head
-                return peekables.parallelStream()
+                // find min
+                Optional<T> min = peekables.parallelStream()
                         .map(Peekable::head)
-                        .min(comparator)
-                        .map((value) -> {
-                            // then advance peekable if head match value
-                            peekables = peekables.parallelStream()
-                                    .map((peekable) -> {
-                                        if (comparator.compare(value, peekable.head()) == 0) {
-                                            peekable.advance();
-                                        }
-                                        return peekable;
-                                    })
-                                    .collect(Collectors.toCollection(ConcurrentLinkedQueue::new));
-                            return value;
-                        });
+                        .min(comparator);
+
+                // advance match
+                min.ifPresent((value) -> {
+                    peekables.parallelStream()
+                            .forEach((peekable) -> {
+                                if (comparator.compare(value, peekable.head()) == 0) {
+                                    peekable.advance();
+                                }
+                            });
+                });
+
+                return min;
             }
 
             @Override
