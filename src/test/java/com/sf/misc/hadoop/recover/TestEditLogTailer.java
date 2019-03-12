@@ -27,18 +27,24 @@ public class TestEditLogTailer {
     public void testRenameOldReflection() throws Throwable {
         URI nameservice = URI.create("test-cluster://10.202.77.200:8020,10.202.77.201:8020");
         File storage = new File("__storage__");
-        new EditLogTailer(storage, nameservice, "hdfs", (op) -> {
-            // reject not rename op
-            if (op.opCode.compareTo(FSEditLogOpCodes.OP_RENAME_OLD) != 0) {
-                return false;
-            }
+        new EditLogTailer(
+                storage,
+                nameservice,
+                "hdfs",
+                (op) -> {
+                    // reject not rename op
+                    if (op.opCode.compareTo(FSEditLogOpCodes.OP_RENAME_OLD) != 0) {
+                        return false;
+                    }
 
-            // skip if not in trash
-            if (!RenameOldOpSerializer.target(op).contains(".Trash")) {
-                return false;
-            }
-            return true;
-        }).start(
+                    // skip if not in trash
+                    if (!RenameOldOpSerializer.target(op).contains(".Trash")) {
+                        //return false;
+                    }
+                    return true;
+                },
+                RenameOldOpSerializer::lineSerialize
+        ).start(
                 TimeUnit.MINUTES.toMillis(1),
                 TimeUnit.HOURS.toMillis(1)
         ).logException().join();

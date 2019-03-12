@@ -29,10 +29,8 @@ public class TailingService {
 
         // print
         properties.entrySet().forEach((entry) -> {
-            LOGGER.info("usring config:" + entry.getKey() + " = " + entry.getValue());
+            LOGGER.info("using config:" + entry.getKey() + " = " + entry.getValue());
         });
-
-        long poll_period = Long.valueOf(properties.getOrDefault("poll_period", "" + TimeUnit.MINUTES.toMillis(1)).toString());
 
         new EditLogTailer(
                 new File(properties.getOrDefault("storage", "__storage__").toString()),
@@ -49,7 +47,8 @@ public class TailingService {
                         return false;
                     }
                     return true;
-                }
+                },
+                RenameOldOpSerializer::lineSerialize
         ).start(Long.valueOf(properties.getOrDefault("poll_period", "" + TimeUnit.MINUTES.toMillis(1)).toString()),
                 Long.valueOf(properties.getOrDefault("expiration_for_log", "" + TimeUnit.DAYS.toMillis(1)).toString())
         ).logException().join();

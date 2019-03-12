@@ -4,6 +4,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
@@ -408,6 +409,20 @@ public class Promise<T> extends CompletableFuture<T> {
                         }
                 ),
                 (value) -> value.transform((ignore) -> null)
+        );
+    }
+
+    public static <T> Collector<Promise<T>, ?, Promise<Collection<T>>> listCollector() {
+        return Collectors.collectingAndThen(
+                Collectors.toList(),
+                (collected) -> {
+                    return collected.parallelStream()
+                            .collect(Promise.collector())
+                            .transform((ignore) -> collected.parallelStream()
+                                    .map(Promise::join)
+                                    .collect(Collectors.toList())
+                            );
+                }
         );
     }
 

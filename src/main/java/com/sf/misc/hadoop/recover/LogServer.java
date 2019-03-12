@@ -88,7 +88,9 @@ public class LogServer implements Iterable<FSEditLogOp> {
 
     @Override
     public Iterator<FSEditLogOp> iterator() {
-        return segments().transform(LogSegment::merge).join();
+        return segments().transform((segments) -> {
+            return LogSegment.merge(segments);
+        }).join();
     }
 
     @Override
