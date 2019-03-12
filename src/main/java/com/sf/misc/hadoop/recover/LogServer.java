@@ -86,6 +86,17 @@ public class LogServer implements Iterable<FSEditLogOp> {
         return segments;
     }
 
+    public Iterator<FSEditLogOp> skipUntil(long txid) {
+        return segments().transform((segments) -> {
+            return LogSegment.merge(
+                    segments.parallelStream()
+                            .filter((segment) -> {
+                                return segment.to() > txid;
+                            })
+                            .collect(Collectors.toList()));
+        }).join();
+    }
+
     @Override
     public Iterator<FSEditLogOp> iterator() {
         return segments().transform((segments) -> {

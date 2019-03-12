@@ -147,6 +147,39 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
         return generated;
     }
 
+
+    public Iterator<FSEditLogOp> skipUntil(long txid) {
+        Promise<NamespaceInfo> namespace = findNameSpace(nameservice);
+        Promise<URI> jouranl_server = findJournalServer(nameservice);
+
+        // build server iterators
+        return jouranl_server.transformAsync((journal) -> {
+            String jouranl_id = journal.getPath().substring(1);
+            return Arrays.stream(journal.getAuthority().split(";")).parallel()
+                    .map((part) -> {
+                        // trick to parse rpc server url
+                        URI rpc = URI.create("any://" + part);
+
+                        LOGGER.debug("create log server:" + rpc);
+                        // closure to produce log server
+                        return (Promise.PromiseFunction<NamespaceInfo, LogServer>) (info) -> new LogServer(
+                                new InetSocketAddress(rpc.getHost(), rpc.getPort()),
+                                jouranl_id,
+                                info
+                        );
+                    })
+                    .map((genetator) -> {
+                        return namespace.transform((info) -> genetator.apply(info).skipUntil(txid));
+                    })
+                    .collect(Promise.listCollector());
+        }).transform((iterators) -> {
+            return LazyIterators.merge(
+                    Comparator.comparing(FSEditLogOp::getTransactionId),
+                    iterators
+            );
+        }).join();
+    }
+
     @Override
     public Iterator<FSEditLogOp> iterator() {
         Promise<NamespaceInfo> namespace = findNameSpace(nameservice);

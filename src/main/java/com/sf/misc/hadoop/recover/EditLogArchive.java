@@ -33,6 +33,7 @@ public class EditLogArchive {
     protected static final LoadingCache<File, OutputStream> STREAM_CACHE = CacheBuilder.newBuilder()
             .expireAfterAccess(5, TimeUnit.MINUTES)
             .removalListener((RemovalListener<File, OutputStream>) (notice) -> {
+                LOGGER.info("close stream:" + notice.getKey());
                 Optional.ofNullable(notice.getValue()).ifPresent((stream) -> {
                     try {
                         stream.close();
@@ -44,6 +45,7 @@ public class EditLogArchive {
             .build(new CacheLoader<File, OutputStream>() {
                 @Override
                 public OutputStream load(File key) throws Exception {
+                    LOGGER.info("create stream:" + key);
                     key.getParentFile().mkdirs();
                     return new FileOutputStream(key, true);
                 }
@@ -106,7 +108,9 @@ public class EditLogArchive {
         long cut = System.currentTimeMillis() - expiration_for_log;
         return listEditLogs().parallelStream()
                 .filter((state) -> cut >= state.timestamp())
-                .map((stat) -> Promise.light(() -> stat.file().delete()))
+                .map((stat) -> Promise.light(() -> stat.file().delete())
+                        .sidekick(() -> LOGGER.info("delete file:" + stat.file()))
+                )
                 .collect(Promise.collector());
     }
 
