@@ -13,6 +13,8 @@ import java.net.URI;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class EditLogTailer {
 
@@ -33,45 +35,55 @@ public class EditLogTailer {
     }
 
     public Promise<?> start(long poll_period, long expiration_for_log) {
+        LOGGER.info("start log tailing, poll_period:" + poll_period + " expiration_for_log:" + expiration_for_log);
         return Promise.period(
                 () -> {
                     // start cleanup
-                    Promise<?> clean_work = archive.cleanExpireLogs(expiration_for_log);
-
-                    // append log
-                    Promise<?> sync_log = archive.latest().lastTransactionID().transform((txid) -> {
-                        txid = Math.max(txid, last_txid.get());
-                        LOGGER.info("start tailing... txid:" + txid);
-
-                        final long start = txid;
-                        long updated = LazyIterators.stream(aggregator.skipUntil(start).join()).parallel()
-                                .filter((op) -> op.getTransactionId() > start)
-                                .filter(op_filter)
-                                .map((op) -> {
-                                    try {
-                                        OutputStream stream = archive.streamForOp(op).join();
-                                        stream.write(line_serializer.apply(op));
-                                        stream.flush();
-                                    } catch (IOException e) {
-                                        last_txid.set(HdfsConstants.INVALID_TXID);
-                                        throw new UncheckedIOException("fail to write op:" + op, e);
-                                    }
-
-                                    return op.getTransactionId();
-                                })
-                                .max(Long::compareTo)
-                                .orElse(HdfsConstants.INVALID_TXID);
-
-                        last_txid.set(Math.max(last_txid.get(), updated));
-                        LOGGER.info("end tailing, last txid:" + last_txid.get());
-                        return null;
-                    });
-
-                    // join clean
-                    Promise.all(clean_work, sync_log).join();
+                    Stream.of(
+                            doClean(expiration_for_log),
+                            doSync(poll_period)
+                    ).collect(Promise.collector()).join();
                     return;
                 },
                 TimeUnit.MILLISECONDS.toMillis(poll_period)
         );
+    }
+
+    protected Promise<?> doClean(long expiration_for_log) {
+        return archive.cleanExpireLogs(expiration_for_log);
+    }
+
+    protected Promise<?> doSync(long poll_period) {
+        return archive.latest().lastTransactionID().transformAsync((txid) -> {
+            txid = Math.max(txid, last_txid.get());
+            LOGGER.info("start tailing... txid:" + txid);
+            Promise<Long> updated = aggregator.skipUntil(txid).transform((iterator) -> {
+                return LazyIterators.stream(iterator).parallel()
+                        .filter(op_filter)
+                        .map((op) -> {
+                            try {
+                                OutputStream stream = archive.streamForOp(op).join();
+                                stream.write(line_serializer.apply(op));
+                                stream.flush();
+                            } catch (IOException e) {
+                                last_txid.set(HdfsConstants.INVALID_TXID);
+                                throw new UncheckedIOException("fail to write op:" + op, e);
+                            }
+
+                            return op.getTransactionId();
+                        })
+                        .max(Long::compareTo)
+                        .orElse(HdfsConstants.INVALID_TXID);
+            });
+
+            final long start = txid;
+            return updated.transform((last) -> {
+                // update tracking
+                last_txid.set(Math.max(last_txid.get(), last));
+
+                LOGGER.info("end tailing...process:" + (last_txid.get() - start) + " trasactions, last txid:" + last_txid.get());
+                return null;
+            });
+        });
     }
 }

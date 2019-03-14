@@ -18,6 +18,7 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Collection;
 import java.util.Comparator;
@@ -29,6 +30,9 @@ import java.util.stream.Collectors;
 public class EditLogArchive {
 
     public static final Log LOGGER = LogFactory.getLog(EditLogArchive.class);
+
+    protected static final String FILE_TIME_FORMAT = "yyyyMMddHH0000";
+    protected static final String FILE_TIME_PARSE = "yyyyMMddHHmmss";
 
     protected static final LoadingCache<File, OutputStream> STREAM_CACHE = CacheBuilder.newBuilder()
             .expireAfterAccess(5, TimeUnit.MINUTES)
@@ -62,7 +66,12 @@ public class EditLogArchive {
 
         protected EditLogStat(File file) {
             this.file = file;
-            this.timestamp = Long.valueOf(file.getName().replace(EDITLOG_PREFIX, ""));
+            try {
+                this.timestamp = new SimpleDateFormat(FILE_TIME_PARSE)
+                        .parse(file.getName().replace(EDITLOG_PREFIX, "")).getTime();
+            } catch (ParseException e) {
+                throw new IllegalArgumentException("fail to parse file name:" + file, e);
+            }
         }
 
         public long timestamp() {
@@ -126,7 +135,7 @@ public class EditLogArchive {
     }
 
     public File locateFileForTimestamp(long timestamp) {
-        return new File(storage, EDITLOG_PREFIX + new SimpleDateFormat("yyyyMMddHH0000").format(new Date()));
+        return new File(storage, EDITLOG_PREFIX + new SimpleDateFormat(FILE_TIME_FORMAT).format(new Date()));
     }
 
     public Collection<EditLogStat> listEditLogs() {
