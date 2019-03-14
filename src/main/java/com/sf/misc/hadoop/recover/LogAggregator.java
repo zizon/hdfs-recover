@@ -1,5 +1,6 @@
 package com.sf.misc.hadoop.recover;
 
+import com.sun.istack.internal.NotNull;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -8,6 +9,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.NameNodeProxies;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
 import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
@@ -15,6 +17,7 @@ import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.security.UserGroupInformation;
 
+import javax.annotation.Nonnull;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -22,7 +25,6 @@ import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -38,11 +40,12 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
         this.runas = runas;
     }
 
-    public Promise<List<Promise<LogServer>>> logServers() {
+    public Promise<Iterator<FSEditLogOp>> skipUntil(long txid) {
         Promise<NamespaceInfo> namespace = findNameSpace(nameservice);
         Promise<URI> jouranl_server = findJournalServer(nameservice);
 
-        return jouranl_server.transform((journal) -> {
+        // build server iterators
+        return jouranl_server.transformAsync((journal) -> {
             String jouranl_id = journal.getPath().substring(1);
             return Arrays.stream(journal.getAuthority().split(";")).parallel()
                     .map((part) -> {
@@ -57,10 +60,20 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
                                 info
                         );
                     })
-                    .map((genetator) -> {
-                        return namespace.transform((info) -> genetator.apply(info));
+                    .map((log_server_genetator) -> {
+                        return namespace.transformAsync((info) -> log_server_genetator.apply(info).skipUntil(txid));
                     })
-                    .collect(Collectors.toList());
+                    .collect(Promise.listCollector())
+                    .transform((iterators) -> {
+                        return iterators.parallelStream()
+                                .map(LazyIterators::prefetch)
+                                .collect(Collectors.toList());
+                    });
+        }).transform((iterators) -> {
+            return LazyIterators.merge(
+                    Comparator.comparing(FSEditLogOp::getTransactionId),
+                    iterators
+            );
         });
     }
 
@@ -130,9 +143,8 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
             // set namenodes
             generated.set(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX + "." + nameservice, //
                     Arrays.stream(config.getAuthority().split(",")) //
-                            .map((host) -> {
+                            .peek((host) -> {
                                 generated.set(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY + "." + nameservice + "." + host, host);
-                                return host;
                             }) //
                             .collect(Collectors.joining(",")) //
             );
@@ -147,69 +159,8 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
         return generated;
     }
 
-
-    public Iterator<FSEditLogOp> skipUntil(long txid) {
-        Promise<NamespaceInfo> namespace = findNameSpace(nameservice);
-        Promise<URI> jouranl_server = findJournalServer(nameservice);
-
-        // build server iterators
-        return jouranl_server.transformAsync((journal) -> {
-            String jouranl_id = journal.getPath().substring(1);
-            return Arrays.stream(journal.getAuthority().split(";")).parallel()
-                    .map((part) -> {
-                        // trick to parse rpc server url
-                        URI rpc = URI.create("any://" + part);
-
-                        LOGGER.debug("create log server:" + rpc);
-                        // closure to produce log server
-                        return (Promise.PromiseFunction<NamespaceInfo, LogServer>) (info) -> new LogServer(
-                                new InetSocketAddress(rpc.getHost(), rpc.getPort()),
-                                jouranl_id,
-                                info
-                        );
-                    })
-                    .map((genetator) -> {
-                        return namespace.transform((info) -> genetator.apply(info).skipUntil(txid));
-                    })
-                    .collect(Promise.listCollector());
-        }).transform((iterators) -> {
-            return LazyIterators.merge(
-                    Comparator.comparing(FSEditLogOp::getTransactionId),
-                    iterators
-            );
-        }).join();
-    }
-
     @Override
     public Iterator<FSEditLogOp> iterator() {
-        Promise<NamespaceInfo> namespace = findNameSpace(nameservice);
-        Promise<URI> jouranl_server = findJournalServer(nameservice);
-
-        // build server iterators
-        return jouranl_server.transformAsync((journal) -> {
-            String jouranl_id = journal.getPath().substring(1);
-            return Arrays.stream(journal.getAuthority().split(";")).parallel()
-                    .map((part) -> {
-                        // trick to parse rpc server url
-                        URI rpc = URI.create("any://" + part);
-
-                        LOGGER.debug("create log server:" + rpc);
-                        // closure to produce log server
-                        return (Promise.PromiseFunction<NamespaceInfo, LogServer>) (info) -> new LogServer(
-                                new InetSocketAddress(rpc.getHost(), rpc.getPort()),
-                                jouranl_id,
-                                info
-                        );
-                    })
-                    .map((genetator) -> {
-                        return namespace.transform((info) -> genetator.apply(info).iterator());
-                    })
-                    .collect(Promise.listCollector());
-        }).transform((iterators) -> {
-            return LazyIterators.merge(
-                    Comparator.comparing(FSEditLogOp::getTransactionId),
-                    iterators
-            );
-        }).join();
+        return skipUntil(HdfsConstants.INVALID_TXID).join();
     }
 }

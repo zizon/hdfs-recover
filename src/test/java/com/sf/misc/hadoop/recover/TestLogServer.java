@@ -2,29 +2,17 @@ package com.sf.misc.hadoop.recover;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hdfs.server.namenode.EditLogInputStream;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.junit.Assert;
 import org.junit.Test;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
-import java.util.Comparator;
-import java.util.List;
 import java.util.NavigableSet;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Function;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 public class TestLogServer {
 
@@ -44,18 +32,22 @@ public class TestLogServer {
             segment.stream().parallel().forEach((value) -> {
                 Assert.assertEquals("segment fail:" + value,
                         value.to() - value.from() + 1,
-                        StreamSupport.stream(value.spliterator(), true).parallel().count()
+                        LazyIterators.stream(value).parallel().count()
                 );
             });
             return null;
         });
 
         Promise<?> server_test = Promise.light(() -> {
+
             NavigableSet<Long> txids = new ConcurrentSkipListSet<>(Long::compareTo);
-            for (FSEditLogOp op : server) {
-                txids.add(op.getTransactionId());
-            }
+            Queue<Long> all = LazyIterators.stream(server).parallel()
+                    .map(FSEditLogOp::getTransactionId)
+                    .collect(Collectors.toCollection(ConcurrentLinkedQueue::new));
+
+            txids.addAll(all);
             Assert.assertEquals("server iterator fail", txids.last() - txids.first() + 1, txids.size());
+            Assert.assertEquals("size match:", all.size(), txids.size());
         });
 
         Promise.all(segment_test, server_test).join();

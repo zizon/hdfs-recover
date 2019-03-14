@@ -5,6 +5,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -17,10 +18,14 @@ public class TailingService {
 
     public static final Log LOGGER = LogFactory.getLog(TailingService.class);
 
-    public static void main(String args[]) {
+    public static void main(String[] args) {
         // load config
         Properties properties = new Properties();
         URL config = Thread.currentThread().getContextClassLoader().getResource("config.property");
+        if (config == null) {
+            throw new UncheckedIOException(new FileNotFoundException("no config.property found"));
+        }
+
         try (InputStream input = config.openStream()) {
             properties.load(input);
         } catch (IOException e) {
@@ -28,8 +33,8 @@ public class TailingService {
         }
 
         // print
-        properties.entrySet().forEach((entry) -> {
-            LOGGER.info("using config:" + entry.getKey() + " = " + entry.getValue());
+        properties.forEach((key, value) -> {
+            LOGGER.info("using config:" + key + " = " + value);
         });
 
         new EditLogTailer(

@@ -15,8 +15,10 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.Objects;
 import java.util.Optional;
 
 public class LogSegment implements Iterable<FSEditLogOp> {
@@ -42,44 +44,45 @@ public class LogSegment implements Iterable<FSEditLogOp> {
     }
 
     public static Iterator<FSEditLogOp> merge(Collection<LogSegment> segments) {
-        return new Iterator<FSEditLogOp>() {
-            Iterator<FSEditLogOp> delegate = LazyIterators.filter(
-                    LazyIterators.concat(
-                            segments.stream().parallel()
-                                    .sorted(Comparator.comparing(LogSegment::from))
-                                    .map((segment) -> segment::iterator)
-                    ),
-                    FSEditLogOp::hasTransactionId
-            );
+        Iterator<FSEditLogOp> concated = LazyIterators.concat(
+                segments.stream().parallel()
+                        .sorted(Comparator.comparing(LogSegment::from))
+                        .map((segment) -> segment::iterator)
+        );
 
-            long last_txid = HdfsConstants.INVALID_TXID;
-            Optional<FSEditLogOp> resolved = resolveNext();
+        LazyIterators.MemorialIterator<FSEditLogOp> maybe_duplicated = LazyIterators.memorial(
+                LazyIterators.stream(concated).parallel()
+                        .filter(FSEditLogOp::hasTransactionId)
+                        .iterator()
+        );
 
-            Optional<FSEditLogOp> resolveNext() {
-                while (delegate.hasNext()) {
-                    FSEditLogOp next = delegate.next();
-                    if (next.getTransactionId() > last_txid) {
-                        last_txid = next.getTransactionId();
-                        return Optional.of(next);
+        return LazyIterators.stream(
+                new Iterator<FSEditLogOp>() {
+                    @Override
+                    public boolean hasNext() {
+                        return maybe_duplicated.hasNext();
+                    }
+
+                    @Override
+                    public FSEditLogOp next() {
+                        FSEditLogOp current = maybe_duplicated.value();
+                        if (current == null) {
+                            return maybe_duplicated.next();
+                        }
+
+                        do {
+                            FSEditLogOp next = maybe_duplicated.next();
+                            if (current.getTransactionId() > next.getTransactionId()) {
+                                continue;
+                            }
+
+                            return next;
+                        } while (maybe_duplicated.hasNext());
+
+                        return null;
                     }
                 }
-
-                return Optional.empty();
-            }
-
-
-            @Override
-            public boolean hasNext() {
-                return resolved.isPresent();
-            }
-
-            @Override
-            public FSEditLogOp next() {
-                FSEditLogOp value = resolved.get();
-                resolved = resolveNext();
-                return value;
-            }
-        };
+        ).parallel().filter(Objects::nonNull).iterator();
     }
 
     public long from() {
@@ -100,16 +103,29 @@ public class LogSegment implements Iterable<FSEditLogOp> {
         );
     }
 
+    public Iterator<FSEditLogOp> skipUntil(long txid) {
+        if (txid > this.to()) {
+            return Collections.emptyIterator();
+        }
+
+        EditLogInputStream stream = stream();
+        return LazyIterators.stream(
+                LazyIterators.generate(() ->
+                        Optional.ofNullable(
+                                FSEditLogOpSniper.copy(stream.readOp())
+                        )
+                )
+        ).filter(FSEditLogOp::hasTransactionId)
+                .filter((op) -> op.getTransactionId() > txid).iterator();
+    }
+
     @Override
     public Iterator<FSEditLogOp> iterator() {
-        EditLogInputStream stream = stream();
-        return LazyIterators.generate(() -> {
-            return Optional.ofNullable(FSEditLogOpSniper.copy(stream.readOp()));
-        });
+        return skipUntil(HdfsConstants.INVALID_TXID);
     }
 
     @Override
     public String toString() {
-        return "from:" + from + " to:" + to + " transations:" + (to - from);
+        return "from:" + from + " to:" + to + " transactions:" + (to - from);
     }
 }

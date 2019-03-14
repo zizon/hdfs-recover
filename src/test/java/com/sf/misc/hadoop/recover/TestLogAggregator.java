@@ -3,17 +3,15 @@ package com.sf.misc.hadoop.recover;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.Assert;
 import org.junit.Test;
 
 import java.net.URI;
-import java.security.PrivilegedAction;
 import java.util.NavigableSet;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 public class TestLogAggregator {
 
@@ -26,10 +24,14 @@ public class TestLogAggregator {
 
         LogAggregator aggregator = new LogAggregator(nameservice, "hdfs");
 
-        NavigableSet<Long> txids = StreamSupport.stream(aggregator.spliterator(), true).parallel()
+        Queue<Long> all = LazyIterators.stream(aggregator).parallel()
                 .map(FSEditLogOp::getTransactionId)
-                .collect(Collectors.toCollection(ConcurrentSkipListSet::new));
+                .collect(Collectors.toCollection(ConcurrentLinkedQueue::new));
 
+        NavigableSet<Long> txids = new ConcurrentSkipListSet<>(all);
+
+        LOGGER.info(txids.size());
         Assert.assertEquals("aggreatro fail", txids.last() - txids.first() + 1, txids.size());
+        Assert.assertEquals("size match:", all.size(), txids.size());
     }
 }

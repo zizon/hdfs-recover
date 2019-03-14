@@ -2,22 +2,12 @@ package com.sf.misc.hadoop.recover;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hdfs.server.namenode.EditLogInputStream;
-import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
-import org.apache.hadoop.security.UserGroupInformation;
-import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.net.URI;
-import java.security.PrivilegedAction;
-import java.security.PrivilegedExceptionAction;
-import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Logger;
-import java.util.stream.Stream;
 
 public class TestEditLogTailer {
 

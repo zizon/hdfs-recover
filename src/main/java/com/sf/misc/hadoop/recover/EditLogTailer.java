@@ -13,7 +13,6 @@ import java.net.URI;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
-import java.util.stream.StreamSupport;
 
 public class EditLogTailer {
 
@@ -45,21 +44,17 @@ public class EditLogTailer {
                         LOGGER.info("start tailing... txid:" + txid);
 
                         final long start = txid;
-                        long updated = StreamSupport.stream(
-                                ((Iterable<FSEditLogOp>) () -> {
-                                    return aggregator.skipUntil(start);
-                                }).spliterator(),
-                                true
-                        ).parallel()
+                        long updated = LazyIterators.stream(aggregator.skipUntil(start).join()).parallel()
+                                .filter((op) -> op.getTransactionId() > start)
+                                .filter(op_filter)
                                 .map((op) -> {
-                                    if (op.getTransactionId() > start && op_filter.test(op)) {
-                                        try {
-                                            OutputStream stream = archive.streamForOp(op).join();
-                                            stream.write(line_serializer.apply(op));
-                                            stream.flush();
-                                        } catch (IOException e) {
-                                            throw new UncheckedIOException("fail to write op:" + op, e);
-                                        }
+                                    try {
+                                        OutputStream stream = archive.streamForOp(op).join();
+                                        stream.write(line_serializer.apply(op));
+                                        stream.flush();
+                                    } catch (IOException e) {
+                                        last_txid.set(HdfsConstants.INVALID_TXID);
+                                        throw new UncheckedIOException("fail to write op:" + op, e);
                                     }
 
                                     return op.getTransactionId();

@@ -3,6 +3,7 @@ package com.sf.misc.hadoop.recover;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocolPB.PBHelper;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocol;
 import org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos;
@@ -86,22 +87,21 @@ public class LogServer implements Iterable<FSEditLogOp> {
         return segments;
     }
 
-    public Iterator<FSEditLogOp> skipUntil(long txid) {
+    public Promise<Iterator<FSEditLogOp>> skipUntil(long txid) {
         return segments().transform((segments) -> {
-            return LogSegment.merge(
-                    segments.parallelStream()
-                            .filter((segment) -> {
-                                return segment.to() > txid;
-                            })
-                            .collect(Collectors.toList()));
-        }).join();
+            return LazyIterators.stream(
+                    LogSegment.merge(
+                            segments.parallelStream()
+                                    .filter((segment) -> segment.to() > txid)
+                                    .collect(Collectors.toList())
+                    )
+            ).filter((op) -> op.getTransactionId() > txid).iterator();
+        });
     }
 
     @Override
     public Iterator<FSEditLogOp> iterator() {
-        return segments().transform((segments) -> {
-            return LogSegment.merge(segments);
-        }).join();
+        return skipUntil(HdfsConstants.INVALID_TXID).join();
     }
 
     @Override

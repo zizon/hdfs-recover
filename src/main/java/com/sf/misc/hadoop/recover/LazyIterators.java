@@ -1,45 +1,81 @@
 package com.sf.misc.hadoop.recover;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 public class LazyIterators {
 
-    protected static class Peekable<T> {
+    public static final Log LOGGER = LogFactory.getLog(LazyIterators.class);
 
-        protected final Iterator<T> iterator;
-        protected boolean emtpy;
-        protected T head;
+    public static class MemorialIterator<T> implements Iterator<T> {
 
-        protected Peekable(Iterator<T> iterator) {
-            this.iterator = iterator;
-            this.emtpy = false;
-            this.advance();
+        protected final Iterator<T> delegate;
+        protected T value;
+
+        protected MemorialIterator(Iterator<T> iterator) {
+            this.delegate = iterator;
+            this.value = null;
         }
 
-        public boolean isEmtpy() {
-            return emtpy;
+        public T value() {
+            return value;
         }
 
-        public T head() {
-            return head;
+        @Override
+        public boolean hasNext() {
+            return delegate.hasNext();
         }
 
-        public void advance() {
-            if (!iterator.hasNext()) {
-                this.emtpy = true;
-                return;
-            }
+        @Override
+        public T next() {
+            value = delegate.next();
+            return value;
+        }
+    }
 
-            head = iterator.next();
-            return;
+    protected static class PrefetchIterator<T> implements Iterator<T> {
+
+        protected Promise<Optional<T>> fetching;
+        protected final Iterator<T> delegate;
+
+        protected PrefetchIterator(Iterator<T> delegate) {
+            this.delegate = delegate;
+            this.fetching = prefetch();
+        }
+
+        protected Promise<Optional<T>> prefetch() {
+            return Promise.light(() -> {
+                if (delegate.hasNext()) {
+                    return Optional.of(delegate.next());
+                }
+
+                // a true null indicate end of iterator
+                return Optional.empty();
+            });
+        }
+
+        @Override
+        public boolean hasNext() {
+            return this.fetching.join().isPresent();
+        }
+
+        @Override
+        public T next() {
+            T value = this.fetching.join().orElseThrow(() -> new NoSuchElementException("end of stream"));
+            fetching = prefetch();
+            return value;
         }
     }
 
@@ -70,43 +106,41 @@ public class LazyIterators {
     }
 
     public static <T> Iterator<T> merge(Comparator<T> comparator, Collection<Iterator<T>> iterators) {
-        return new Iterator<T>() {
-            Collection<Peekable<T>> peekables = decorate(iterators);
-            Optional<T> resolved_value = resolveNext();
+        // poll value
+        Collection<MemorialIterator<T>> memorials = iterators.parallelStream()
+                .filter(Iterator::hasNext)
+                .map(MemorialIterator::new)
+                .peek(MemorialIterator::next)
+                .collect(Collectors.toCollection(ConcurrentLinkedQueue::new));
 
-            Optional<T> resolveNext() {
-                peekables.removeIf(Peekable::isEmtpy);
+        return generate(() -> {
+            // compare base on value
+            Optional<T> min = memorials.parallelStream()
+                    .map(MemorialIterator::value)
+                    .min(comparator);
 
-                // find min
-                Optional<T> min = peekables.parallelStream()
-                        .map(Peekable::head)
-                        .min(comparator);
-
-                // advance match
-                min.ifPresent((value) -> {
-                    peekables.parallelStream()
-                            .forEach((peekable) -> {
-                                if (comparator.compare(value, peekable.head()) == 0) {
-                                    peekable.advance();
+            // advacen selected iterator
+            min.ifPresent((value) -> {
+                memorials.parallelStream()
+                        .forEach((iterator) -> {
+                            if (comparator.compare(value, iterator.value()) == 0) {
+                                if (iterator.hasNext()) {
+                                    iterator.next();
+                                    return;
                                 }
-                            });
-                });
 
-                return min;
-            }
+                                // no more,remove this
+                                memorials.remove(iterator);
+                            }
 
-            @Override
-            public boolean hasNext() {
-                return resolved_value.isPresent();
-            }
+                            // not match,keep value,and do nothing
+                            return;
+                        });
+            });
 
-            @Override
-            public T next() {
-                T value = resolved_value.get();
-                resolved_value = resolveNext();
-                return value;
-            }
-        };
+            // then advance
+            return min;
+        });
     }
 
     public static <T> Iterator<T> generate(Promise.PromiseSupplier<Optional<T>> generator) {
@@ -114,7 +148,7 @@ public class LazyIterators {
             Optional<T> resolved_value = resolveNext();
 
             Optional<T> resolveNext() {
-                return resolved_value = generator.get();
+                return generator.get();
             }
 
             @Override
@@ -124,44 +158,34 @@ public class LazyIterators {
 
             @Override
             public T next() {
-                T value = resolved_value.get();
+                T value = resolved_value.orElseThrow(() -> new NoSuchElementException("end of iterator"));
                 resolved_value = resolveNext();
                 return value;
             }
         };
     }
 
-    public static <T> Iterator<T> filter(Iterator<T> iterator, Predicate<T> predicate) {
-        return new Iterator<T>() {
+    public static <T> Iterator<T> prefetch(Iterator<T> iterator) {
+        if (iterator instanceof PrefetchIterator) {
+            return iterator;
+        }
 
-            Optional<T> resolved = resolveNext();
-
-            Optional<T> resolveNext() {
-                while (iterator.hasNext()) {
-                    T value = iterator.next();
-                    if (predicate.test(value)) {
-                        return Optional.of(value);
-                    }
-                }
-
-                return Optional.empty();
-            }
-
-            @Override
-            public boolean hasNext() {
-                return resolved.isPresent();
-            }
-
-            @Override
-            public T next() {
-                T value = resolved.get();
-                resolved = resolveNext();
-                return value;
-            }
-        };
+        return new PrefetchIterator<>(iterator);
     }
 
-    protected static <T> Collection<Peekable<T>> decorate(Collection<Iterator<T>> iterators) {
-        return iterators.parallelStream().map(Peekable::new).collect(Collectors.toCollection(ConcurrentLinkedQueue::new));
+    public static <T> MemorialIterator<T> memorial(Iterator<T> iterator) {
+        if (iterator instanceof MemorialIterator) {
+            return (MemorialIterator<T>) iterator;
+        }
+
+        return new MemorialIterator<>(iterator);
+    }
+
+    public static <T> Stream<T> stream(Iterator<T> iterator) {
+        return StreamSupport.stream(((Iterable<T>) () -> iterator).spliterator(), false);
+    }
+
+    public static <T> Stream<T> stream(Iterable<T> iterable) {
+        return StreamSupport.stream(iterable.spliterator(), false);
     }
 }
