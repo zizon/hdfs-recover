@@ -1,48 +1,36 @@
 package com.sf.misc.hadoop.recover;
 
-import com.sun.istack.internal.NotNull;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DistributedFileSystem;
-import org.apache.hadoop.hdfs.NameNodeProxies;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp;
-import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
-import org.apache.hadoop.ipc.RPC;
-import org.apache.hadoop.security.UserGroupInformation;
 
-import javax.annotation.Nonnull;
-import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URI;
-import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 public class LogAggregator implements Iterable<FSEditLogOp> {
 
     public static final Log LOGGER = LogFactory.getLog(LogAggregator.class);
 
-    protected final URI nameservice;
-    protected final String runas;
+    protected final NamenodeRPC namenode;
+    protected final boolean in_progress_ok;
 
-    public LogAggregator(URI nameservice, String runas) {
-        this.nameservice = nameservice;
-        this.runas = runas;
+    public LogAggregator(NamenodeRPC namenode, boolean in_progress_ok) {
+        this.namenode = namenode;
+        this.in_progress_ok = in_progress_ok;
     }
 
     public Promise<Iterator<FSEditLogOp>> skipUntil(long txid) {
-        Promise<NamespaceInfo> namespace = findNameSpace(nameservice);
-        Promise<URI> jouranl_server = findJournalServer(nameservice);
+        Promise<NamespaceInfo> namespace = namenode.protocol(NamenodeProtocol.class).transform(NamenodeProtocol::versionRequest);
+        Promise<URI> jouranl_server = namenode.configuration()
+                .transform((configuration) -> URI.create(configuration.get(DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR_KEY)));
 
         // build server iterators
         return jouranl_server.transformAsync((journal) -> {
@@ -57,7 +45,8 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
                         return (Promise.PromiseFunction<NamespaceInfo, LogServer>) (info) -> new LogServer(
                                 new InetSocketAddress(rpc.getHost(), rpc.getPort()),
                                 jouranl_id,
-                                info
+                                info,
+                                in_progress_ok
                         );
                     })
                     .map((log_server_genetator) -> {
@@ -75,88 +64,6 @@ public class LogAggregator implements Iterable<FSEditLogOp> {
                     iterators
             );
         });
-    }
-
-    protected Promise<NamespaceInfo> findNameSpace(URI nameservice) {
-        Configuration configuration = generateHdfsHAConfiguration(nameservice);
-
-        // create namnode protocol
-        Promise<NamenodeProtocol> namenode = Promise.light(() -> {
-            URI uri = URI.create(configuration.get(CommonConfigurationKeys.FS_DEFAULT_NAME_KEY));
-            return UserGroupInformation.createRemoteUser(runas).doAs((PrivilegedExceptionAction<NamenodeProtocol>) () -> {
-                return NameNodeProxies.createProxy(configuration, uri, NamenodeProtocol.class).getProxy();
-            });
-        });
-
-        // maybe set namespace info
-        return namenode.transform(NamenodeProtocol::versionRequest)
-                .sidekick(() -> RPC.stopProxy(namenode.join()));
-    }
-
-    protected Promise<URI> findJournalServer(URI nameservice) {
-        Promise<Configuration>[] racing = Arrays.stream(nameservice.getAuthority().split(","))
-                .map((host_with_port) -> {
-                    return URI.create("any://" + host_with_port).getHost();
-                })
-                .map((host) -> {
-                    return URI.create("http://" + host + ":50070/conf");
-                })
-                .map((uri) -> {
-                    // ask namenode
-                    return Promise.light(() -> {
-                        HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
-                        try {
-                            Configuration configuration = new Configuration();
-                            configuration.addResource(connection.getInputStream());
-
-                            // trigger load
-                            configuration.size();
-
-                            return configuration;
-                        } finally {
-                            Optional.ofNullable(connection).ifPresent(HttpURLConnection::disconnect);
-                        }
-                    });
-                })
-                .<Promise<Configuration>>toArray(Promise[]::new);
-
-        // then extract jounral node
-        return Promise.either(racing).transform((configuration) -> {
-            return URI.create(configuration.get(DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR_KEY));
-        });
-    }
-
-    protected Configuration generateHdfsHAConfiguration(URI config) {
-        // config example "test-cluster://10.202.77.200:8020,10.202.77.201:8020"
-        Configuration generated = new Configuration();
-
-        // hdfs
-        if (config.getHost() == null) {
-            // default fs
-            String nameservice = config.getScheme();
-            generated.set(CommonConfigurationKeys.FS_DEFAULT_NAME_KEY, "hdfs://" + nameservice);
-
-            // nameservice ha provider
-            generated.set(DFSConfigKeys.DFS_NAMESERVICES, nameservice);
-            generated.set(DFSConfigKeys.DFS_CLIENT_FAILOVER_PROXY_PROVIDER_KEY_PREFIX + "." + nameservice, ConfiguredFailoverProxyProvider.class.getName());
-
-            // set namenodes
-            generated.set(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX + "." + nameservice, //
-                    Arrays.stream(config.getAuthority().split(",")) //
-                            .peek((host) -> {
-                                generated.set(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY + "." + nameservice + "." + host, host);
-                            }) //
-                            .collect(Collectors.joining(",")) //
-            );
-        } else {
-            // non ha
-            generated.set(FileSystem.FS_DEFAULT_NAME_KEY, "hdfs://" + config.getHost());
-        }
-
-        // hdfs implementation
-        generated.set("fs.hdfs.impl", DistributedFileSystem.class.getName());
-
-        return generated;
     }
 
     @Override

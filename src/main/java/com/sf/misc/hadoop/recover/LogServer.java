@@ -30,11 +30,13 @@ public class LogServer implements Iterable<FSEditLogOp> {
     protected final InetSocketAddress address;
     protected final String journal_id;
     protected final NamespaceInfo namespace;
+    protected final boolean in_progress_ok;
 
-    public LogServer(InetSocketAddress address, String journal_id, NamespaceInfo namespace) {
+    public LogServer(InetSocketAddress address, String journal_id, NamespaceInfo namespace, boolean in_progress_ok) {
         this.address = address;
         this.journal_id = journal_id;
         this.namespace = namespace;
+        this.in_progress_ok = in_progress_ok;
     }
 
     public InetSocketAddress rpcAddress() {
@@ -63,7 +65,7 @@ public class LogServer implements Iterable<FSEditLogOp> {
         // create segments
         Promise<Collection<LogSegment>> segments = jouranl.transform((protocol) -> {
             // touch jouran state
-            QJournalProtocolProtos.GetEditLogManifestResponseProto response = protocol.getEditLogManifest(journal_id, 0, true);
+            QJournalProtocolProtos.GetEditLogManifestResponseProto response = protocol.getEditLogManifest(journal_id, 0, in_progress_ok);
             RemoteEditLogManifest manifest = PBHelper.convert(response.getManifest());
 
             // prepare fetch url

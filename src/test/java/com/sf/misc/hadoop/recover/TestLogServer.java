@@ -25,7 +25,8 @@ public class TestLogServer {
         LogServer server = new LogServer(
                 new InetSocketAddress("10.202.77.201", 8485),
                 "test-cluster-journal",
-                new NamespaceInfo(1095198515, "CID-00865301-72d3-4468-8bf2-7533f99ff254", "BP-1324004911-10.202.77.200-1497948758008", 0)
+                new NamespaceInfo(1095198515, "CID-00865301-72d3-4468-8bf2-7533f99ff254", "BP-1324004911-10.202.77.200-1497948758008", 0),
+                false
         );
 
         Promise<?> segment_test = server.segments().transform((segment) -> {

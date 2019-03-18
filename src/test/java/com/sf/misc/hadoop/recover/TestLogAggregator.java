@@ -21,8 +21,8 @@ public class TestLogAggregator {
     @Test
     public void test() {
         URI nameservice = URI.create("test-cluster://10.202.77.200:8020,10.202.77.201:8020");
-
-        LogAggregator aggregator = new LogAggregator(nameservice, "hdfs");
+        NamenodeRPC namenode = new NamenodeRPC(nameservice, "hdfs");
+        LogAggregator aggregator = new LogAggregator(namenode,false);
 
         Queue<Long> all = LazyIterators.stream(aggregator).parallel()
                 .map(FSEditLogOp::getTransactionId)
@@ -33,5 +33,7 @@ public class TestLogAggregator {
         LOGGER.info(txids.size());
         Assert.assertEquals("aggreatro fail", txids.last() - txids.first() + 1, txids.size());
         Assert.assertEquals("size match:", all.size(), txids.size());
+
+        namenode.close();
     }
 }

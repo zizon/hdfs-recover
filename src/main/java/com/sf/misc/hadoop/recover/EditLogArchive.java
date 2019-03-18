@@ -97,6 +97,11 @@ public class EditLogArchive {
                 }
             });
         }
+
+        @Override
+        public String toString() {
+            return "editlog:" + file();
+        }
     }
 
     protected final File storage;
@@ -109,7 +114,7 @@ public class EditLogArchive {
         }
     }
 
-    public Promise<?> cleanExpireLogs(long expiration_for_log) {
+    public Promise<Void> cleanExpireLogs(long expiration_for_log) {
         if (!storage.exists()) {
             return Promise.success(null);
         }

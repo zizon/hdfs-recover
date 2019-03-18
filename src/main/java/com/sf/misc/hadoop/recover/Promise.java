@@ -12,6 +12,7 @@ import java.util.Queue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
@@ -21,6 +22,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -460,6 +463,90 @@ public class Promise<T> extends CompletableFuture<T> {
         return promise;
     }
 
+    public static <T> Promise<T> lazy(PromiseSupplier<Promise<T>> supplier) {
+        Promise<T> promise = new Promise<T>() {
+            AtomicBoolean evaluated = new AtomicBoolean(false);
+
+            void mayTriggerEvaluate() {
+                if (evaluated.compareAndSet(false, true)) {
+                    // race win,
+                    Promise<T> evaluting = supplier.get();
+
+                    // forward trigger
+                    evaluting.whenCompleteAsync((value, reason) -> {
+                        if (reason != null) {
+                            completeExceptionally(reason);
+                            return;
+                        }
+
+                        complete(value);
+                        return;
+                    }, usingExecutor().executor());
+
+                    // backward trigger
+                    this.whenCompleteAsync((value, reason) -> {
+                        if (reason != null) {
+                            evaluting.completeExceptionally(reason);
+                            return;
+                        }
+
+                        evaluting.complete(value);
+                        return;
+                    });
+                }
+            }
+
+            @Override
+            public T get() throws InterruptedException, ExecutionException {
+                if (!isDone()) {
+                    mayTriggerEvaluate();
+                }
+
+                return super.get();
+            }
+
+            @Override
+            public T get(long timeout, TimeUnit unit)
+                    throws InterruptedException, ExecutionException, TimeoutException {
+                if (!isDone()) {
+                    mayTriggerEvaluate();
+                }
+
+                return super.get(timeout, unit);
+            }
+
+            @Override
+            public T join() {
+                if (!isDone()) {
+                    mayTriggerEvaluate();
+                }
+
+                return super.join();
+            }
+
+            @Override
+            public T getNow(T valueIfAbsent) {
+                if (!isDone()) {
+                    mayTriggerEvaluate();
+                }
+
+                return super.getNow(valueIfAbsent);
+            }
+
+            @Override
+            public <R> Promise<R> transformAsync(PromiseFunction<T, Promise<R>> function) {
+                if (!isDone()) {
+                    mayTriggerEvaluate();
+                }
+
+                return super.transformAsync(function);
+            }
+
+        };
+
+        return promise;
+    }
+
     protected Promise() {
         super();
     }
@@ -492,7 +579,6 @@ public class Promise<T> extends CompletableFuture<T> {
                     promise.complete(final_value);
                 }, usingExecutor().executor());
             } catch (Throwable throwable) {
-                LOGGER.info("value:" + value + " function:" + function);
                 promise.completeExceptionally(throwable);
             }
 
@@ -651,7 +737,6 @@ public class Promise<T> extends CompletableFuture<T> {
 
         return timeout_value;
     }
-
 
     protected PromiseExecutor usingExecutor() {
         return nonblocking();

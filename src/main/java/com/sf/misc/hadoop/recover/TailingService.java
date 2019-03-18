@@ -39,8 +39,10 @@ public class TailingService {
 
         new EditLogTailer(
                 new File(properties.getOrDefault("storage", "__storage__").toString()),
-                URI.create(properties.get("nameservice").toString()),
-                properties.getProperty("runas", "hdfs"),
+                new NamenodeRPC(
+                        URI.create(properties.get("nameservice").toString()),
+                        properties.getProperty("runas", "hdfs")
+                ),
                 (op) -> {
                     // reject not rename op
                     if (op.opCode.compareTo(FSEditLogOpCodes.OP_RENAME_OLD) != 0) {
@@ -53,9 +55,13 @@ public class TailingService {
                     }
                     return true;
                 },
-                RenameOldOpSerializer::lineSerialize
+                RenameOldOpSerializer::lineSerialize,
+                false,
+                (stat) -> {
+                    LOGGER.info("stat:" + stat);
+                }
         ).start(Long.valueOf(properties.getOrDefault("poll_period", "" + TimeUnit.MINUTES.toMillis(1)).toString()),
-                Long.valueOf(properties.getOrDefault("expiration_for_log", "" + TimeUnit.DAYS.toMillis(1)).toString())
+                Long.valueOf(properties.getOrDefault("expiration_for_log", "" + TimeUnit.DAYS.toMillis(365)).toString())
         ).logException().join();
     }
 }
