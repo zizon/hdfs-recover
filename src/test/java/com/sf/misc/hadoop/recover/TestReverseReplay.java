@@ -22,19 +22,26 @@ public class TestReverseReplay {
         File storage = new File("__storage__");
 
         // walk around windows shell problem
+        /*
         Promise.light(() -> FileSystem.getLocal(new Configuration())).transform((fs) -> {
             fs.close();
             return null;
         }).join();
-
+        */
 
         ReverseReplay.RenameInterceptor interceptor = new ReverseReplay.RenameInterceptor() {
             @Override
             public Path transformTarget(Path target) {
-                //return target;
-                //TODO
-                LOGGER.info(target + " -> " +new Path("/tmp/recover_test", target.toUri().getPath()) );
-                return new Path("/tmp/recover_test", target.toUri().getPath());
+                Path base = new Path("/tmp/recover_test");
+                String raw = target.toUri().getPath();
+                Path new_target = new Path(base, raw.substring(1));
+                //LOGGER.info(target + " -> " + new_target);
+                return new_target;
+            }
+
+            @Override
+            public boolean dryrun() {
+                return false;
             }
         };
 

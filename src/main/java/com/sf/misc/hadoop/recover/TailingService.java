@@ -1,5 +1,15 @@
 package com.sf.misc.hadoop.recover;
 
+import com.sun.corba.se.pept.protocol.ProtocolHandler;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.handler.codec.http.cors.CorsHandler;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
@@ -56,12 +66,13 @@ public class TailingService {
                     return true;
                 },
                 RenameOldOpSerializer::lineSerialize,
-                false,
+                true,
                 (stat) -> {
                     LOGGER.info("stat:" + stat);
                 }
         ).start(Long.valueOf(properties.getOrDefault("poll_period", "" + TimeUnit.MINUTES.toMillis(1)).toString()),
                 Long.valueOf(properties.getOrDefault("expiration_for_log", "" + TimeUnit.DAYS.toMillis(365)).toString())
         ).logException().join();
+
     }
 }

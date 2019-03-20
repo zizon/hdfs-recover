@@ -34,7 +34,7 @@ public class TestEditLogTailer {
                     return true;
                 },
                 RenameOldOpSerializer::lineSerialize,
-                false,
+                true,
                 (stat) -> {
                     LOGGER.info("stat:" + stat);
                 }

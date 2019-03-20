@@ -22,7 +22,7 @@ public class TestLogAggregator {
     public void test() {
         URI nameservice = URI.create("test-cluster://10.202.77.200:8020,10.202.77.201:8020");
         NamenodeRPC namenode = new NamenodeRPC(nameservice, "hdfs");
-        LogAggregator aggregator = new LogAggregator(namenode,false);
+        LogAggregator aggregator = new LogAggregator(namenode,true);
 
         Queue<Long> all = LazyIterators.stream(aggregator).parallel()
                 .map(FSEditLogOp::getTransactionId)

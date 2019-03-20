@@ -7,16 +7,16 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.util.Iterator;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 public class ReverseReplay {
-
-    protected static final String PATH_SEPERATOR = Path.SEPARATOR;
 
     public static final Log LOGGER = LogFactory.getLog(ReverseReplay.class);
 
@@ -39,7 +39,9 @@ public class ReverseReplay {
         }
 
         default void onRenameFail(RenameOldOpSerializer.Rename op, Throwable reason) {
-            //LOGGER.error("rename fail:" + op, reason);
+        }
+
+        default void onRenameOk(RenameOldOpSerializer.Rename op) {
         }
     }
 
@@ -50,6 +52,7 @@ public class ReverseReplay {
     }
 
     public Promise<Boolean> forRange(long from, long to) {
+        // time format are in 20190318000000,not unix timestamp
         // trim HHmmss
         final long wrap_part = 1000000;
         long wrap_from = from - from % wrap_part;
@@ -74,6 +77,8 @@ public class ReverseReplay {
                 if (!ok) {
                     interceptor.onRenameFail(op, null);
                 }
+
+                interceptor.onRenameOk(op);
                 return null;
             }).catching((throwable) -> {
                 interceptor.onRenameFail(op, throwable);
@@ -82,13 +87,8 @@ public class ReverseReplay {
                 .transform((ignore) -> true);
     }
 
-    protected Promise<Boolean> reverse(RenameOldOpSerializer.Rename op) {
-        // note,swap the source and target
-        Path rename_source = interceptor.transformSource(new Path(op.target()));
-        Path rename_target = interceptor.transformTarget(new Path(op.source()));
-
-        //LOGGER.info("reverse:" + rename_source + " target:" + rename_target);
-        return doRename(rename_source, rename_target)
+    protected Promise<Boolean> move(Path rename_source, Path rename_target) {
+        return fsRename(rename_source, rename_target)
                 .transformAsync((ok) -> {
                     if (ok) {
                         // lucky, fast path
@@ -104,85 +104,117 @@ public class ReverseReplay {
 
                     if (fs.exists(rename_target)) {
                         // target already exists,resolve conflict
-                        return resolveConflict(rename_source, rename_target);
+                        return resolveMoveConflict(rename_source, rename_target);
                     }
 
-                    LOGGER.info("try create:" + rename_target);
                     // source exits,and target not exists,
-                    return cloneDirectory(rename_source, rename_target)
+                    return preserveParent(rename_source, rename_target)
                             .transformAsync((clone_ok) -> {
-                                if (clone_ok) {
-                                    return doRename(rename_source, rename_target);
+                                if (!clone_ok) {
+                                    LOGGER.warn("fail to preserve directory of target:" + rename_target + " source:" + rename_source);
+                                    return Promise.success(false);
+
                                 }
 
-                                return Promise.success(false);
+                                return fsRename(rename_source, rename_target)
+                                        .transform((move_ok) -> {
+                                            if (move_ok) {
+                                                LOGGER.info("move source:" + rename_source + " to:" + rename_target + " ok");
+                                                return true;
+                                            }
+
+                                            // move fail
+                                            if (!fs.exists(rename_source)) {
+                                                // source
+                                                LOGGER.info("source may had been move:" + rename_source + " assume ok");
+                                                return true;
+                                            }
+
+                                            LOGGER.warn("fail to move:" + rename_source + " target");
+                                            return false;
+                                        });
                             });
                 });
     }
 
-    protected Promise<Boolean> resolveConflict(Path source, Path target) {
+    protected Promise<Boolean> reverse(RenameOldOpSerializer.Rename op) {
+        // note,swap the source and target
+        Path rename_source = interceptor.transformSource(new Path(op.target()));
+        Path rename_target = interceptor.transformTarget(new Path(op.source()));
+
+        return move(rename_source, rename_target);
+    }
+
+    protected Promise<Boolean> resolveMoveConflict(Path source, Path target) {
         Promise<FileStatus> source_status = Promise.light(() -> fs.getFileStatus(source));
-        Promise<FileStatus> target_status = Promise.light(() -> fs.getFileStatus(target));
+        Promise<FileStatus> target_status = Promise.light(() -> fs.getFileStatus(target)).fallback(() -> {
+            // exception occurs,may be some one had move,try latter
+            return fs.getFileStatus(target);
+        });
 
         return Promise.all(source_status, target_status)
                 .transformAsync((ignore) -> {
                     FileStatus source_file = source_status.join();
                     FileStatus target_file = target_status.join();
 
+                    // source is newwer
                     if (source_file.getModificationTime() > target_file.getModificationTime()) {
-                        Path conflict_resolved_target = new Path(target.getParent(), ".conflict." + target.getName());
+                        Path conflict_resolved_target = new Path(target.getParent(), ".conflict-" + UUID.randomUUID() + "." + target.getName());
                         LOGGER.info("source:" + source_file + " is newer than target:" + target_file + " ,try rename target to:" + conflict_resolved_target);
 
-                        return doRename(target, conflict_resolved_target)
+                        return move(target, conflict_resolved_target)
                                 .transformAsync((ok) -> {
                                     if (ok) {
-                                        return doRename(source, target);
+                                        // target backup ok
+                                        return move(source, target);
                                     }
 
-                                    LOGGER.warn("try resolve conflict:" + target + " (rename to:" + conflict_resolved_target + ") but failed");
+                                    // target rename fail
+                                    LOGGER.warn("try move conflict target:" + target + " to:" + conflict_resolved_target + " fail");
                                     return Promise.success(false);
                                 });
                     }
 
-                    // sourfile is older,do nothing
+                    LOGGER.info("source:" + source + " is older than target:" + target + ", do nothing");
+                    // source is older,do nothing
                     return Promise.success(true);
+                }).catching((throwable) -> {
+                    Promise.success(true);
                 });
     }
 
-    protected Promise<Boolean> cloneDirectory(Path source, Path target) {
+    protected Promise<Boolean> preserveParent(Path source, Path target) {
         return Promise.light(() -> fs.exists(target.getParent()))
                 .transformAsync((exists) -> {
-                    if (!exists) {
-                        // parent not exists
-                        return cloneDirectory(source.getParent(), target.getParent());
+                    if (exists) {
+                        return Promise.success(true);
                     }
 
-                    return Promise.success(true);
-                })
-                .transformAsync((parent_ok) -> {
-                    if (!parent_ok) {
-                        return Promise.success(false);
-                    }
+                    // target parent not exists,ensure grand parent
+                    return preserveParent(source.getParent(), target.getParent())
+                            .transform((grand_ok) -> {
+                                if (!grand_ok) {
+                                    LOGGER.warn("can not perserve parent of target:" + target);
+                                    return false;
+                                }
 
-                    if (fs.isDirectory(source)) {
-                        FileStatus status = fs.getFileStatus(source);
+                                // grand parent ok
+                                FileStatus source_parent = fs.getFileStatus(source.getParent());
 
-                        // clone permission
-                        fs.mkdirs(target, status.getPermission());
-                    }
-
-                    return Promise.success(true);
+                                // clone permission
+                                fs.mkdirs(target.getParent(), source_parent.getPermission());
+                                return true;
+                            });
                 });
     }
 
-    protected Promise<Boolean> doRename(Path source, Path target) {
+    protected Promise<Boolean> fsRename(Path source, Path target) {
         if (interceptor.dryrun()) {
             return Promise.success(true);
         }
 
         return Promise.light(() -> fs.rename(source, target));
     }
-
 
     protected Iterator<RenameOldOpSerializer.Rename> iterate(EditLogArchive.EditLogStat stat) {
         try {
@@ -213,5 +245,56 @@ public class ReverseReplay {
         } catch (FileNotFoundException e) {
             throw new UncheckedIOException("no file found:" + stat.file(), e);
         }
+    }
+
+    public static void main(String[] args) {
+        if (args.length != 4) {
+            System.out.println("example: \n"
+                    + "dryrun: java " + ReverseReplay.class.getName() + " test-cluster://10.202.77.200:8020,10.202.77.201:8020 false 20190318000000 20190318201532 \n"
+                    + "move: java " + ReverseReplay.class.getName() + " test-cluster://10.202.77.200:8020,10.202.77.201:8020 false 20190318000000 20190318201532 \n"
+            );
+
+            return;
+        }
+
+        File storage = new File("__storage__");
+        URI nameservice = URI.create(args[0]);
+        boolean dryrun = Boolean.parseBoolean(args[1]);
+        long from = Long.parseLong(args[2]);
+        long to = Long.parseLong(args[3]);
+
+        ReverseReplay.RenameInterceptor interceptor = new ReverseReplay.RenameInterceptor() {
+            @Override
+            public boolean dryrun() {
+                return dryrun;
+            }
+
+            @Override
+            public void onRenameFail(RenameOldOpSerializer.Rename op, Throwable reason) {
+                System.out.println("replay fail of op: " + op);
+            }
+
+            @Override
+            public void onRenameOk(RenameOldOpSerializer.Rename op) {
+                System.out.println("replay ok of op: " + op);
+            }
+        };
+
+        boolean ok = new NamenodeRPC(nameservice, "hdfs").fs()
+                .transform((fs) -> {
+                    return new ReverseReplay(
+                            new EditLogArchive(storage),
+                            fs,
+                            interceptor
+                    );
+                }).transformAsync((replay) -> replay.forRange(from, to))
+                .catching((reason) -> {
+                    reason.printStackTrace();
+                })
+                .maybe()
+                .orElse(false);
+
+        System.out.println("replay:" + ok);
+        System.exit(0);
     }
 }

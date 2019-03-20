@@ -51,6 +51,11 @@ public class RenameOldOpSerializer {
         public long timestamp() {
             return timestamp;
         }
+
+        @Override
+        public String toString() {
+            return "txid:" + txid + " source:" + source + " target:" + target + " timestamp:" + timestamp;
+        }
     }
 
     static {
