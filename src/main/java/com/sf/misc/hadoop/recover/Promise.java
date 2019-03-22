@@ -256,7 +256,9 @@ public class Promise<T> extends CompletableFuture<T> {
             return (Promise<T>) (future);
         } else if (future instanceof CompletableFuture) {
             Promise<T> promise = new Promise<T>() {
+                @Override
                 public boolean cancel(boolean mayInterruptIfRunning) {
+                    super.cancel(mayInterruptIfRunning);
                     return future.cancel(mayInterruptIfRunning);
                 }
             };
@@ -274,7 +276,9 @@ public class Promise<T> extends CompletableFuture<T> {
         }
 
         Promise<T> promise = new Promise<T>() {
+            @Override
             public boolean cancel(boolean mayInterruptIfRunning) {
+                super.cancel(mayInterruptIfRunning);
                 return future.cancel(mayInterruptIfRunning);
             }
         };
@@ -617,6 +621,7 @@ public class Promise<T> extends CompletableFuture<T> {
         Promise<T> self = this;
         Promise<T> promise = new Promise<T>() {
             public boolean cancel(boolean mayInterruptIfRunning) {
+                super.cancel(mayInterruptIfRunning);
                 return self.cancel(mayInterruptIfRunning);
             }
         };
@@ -625,6 +630,32 @@ public class Promise<T> extends CompletableFuture<T> {
             if (exception != null) {
                 try {
                     promise.complete(supplier.get());
+                } catch (Throwable throwable) {
+                    promise.completeExceptionally(throwable);
+                }
+                return;
+            }
+
+            promise.complete(value);
+            return;
+        }, usingExecutor().executor());
+
+        return promise;
+    }
+
+    public Promise<T> fallback(PromiseFunction<Throwable, T> fallback) {
+        Promise<T> self = this;
+        Promise<T> promise = new Promise<T>() {
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                super.cancel(mayInterruptIfRunning);
+                return self.cancel(mayInterruptIfRunning);
+            }
+        };
+
+        this.whenCompleteAsync((value, exception) -> {
+            if (exception != null) {
+                try {
+                    promise.complete(fallback.apply(exception));
                 } catch (Throwable throwable) {
                     promise.completeExceptionally(throwable);
                 }
@@ -653,7 +684,9 @@ public class Promise<T> extends CompletableFuture<T> {
                 return blocking();
             }
 
+            @Override
             public boolean cancel(boolean mayInterruptIfRunning) {
+                super.cancel(mayInterruptIfRunning);
                 return self.cancel(mayInterruptIfRunning);
             }
         };
@@ -700,7 +733,9 @@ public class Promise<T> extends CompletableFuture<T> {
 
         Promise<T> self = this;
         Promise<T> timeout_value = new Promise<T>() {
+            @Override
             public boolean cancel(boolean mayInterruptIfRunning) {
+                super.cancel(mayInterruptIfRunning);
                 return self.cancel(mayInterruptIfRunning);
             }
 
