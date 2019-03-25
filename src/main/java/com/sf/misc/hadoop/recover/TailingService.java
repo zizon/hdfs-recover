@@ -36,6 +36,7 @@ import java.net.URI;
 import java.net.URL;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -43,10 +44,10 @@ public class TailingService {
 
     public static final Log LOGGER = LogFactory.getLog(TailingService.class);
 
-    protected static Promise.PromiseConsumer<EditLogTailer.FSOpStat> startHTTPServer(int port) {
-        AtomicReference<EditLogTailer.FSOpStat> holder = new AtomicReference<>();
+    protected static Promise.PromiseConsumer<ConcurrentMap<FSEditLogOpCodes, EditLogTailer.FSOpStat>> startHTTPServer(int port) {
+        AtomicReference<ConcurrentMap<FSEditLogOpCodes, EditLogTailer.FSOpStat>> holder = new AtomicReference<>();
 
-        Promise.PromiseSupplier<Optional<EditLogTailer.FSOpStat>> supplier = () -> Optional.ofNullable(holder.get());
+        Promise.PromiseSupplier<Optional<ConcurrentMap<FSEditLogOpCodes, EditLogTailer.FSOpStat>>> supplier = () -> Optional.ofNullable(holder.get());
 
         new ServerBootstrap().group(new NioEventLoopGroup())
                 .option(ChannelOption.SO_REUSEADDR, true)
@@ -99,7 +100,7 @@ public class TailingService {
             LOGGER.info("using config:" + key + " = " + value);
         });
 
-        Promise.PromiseConsumer<EditLogTailer.FSOpStat> http_stat_listener = startHTTPServer(Integer.valueOf(properties.getProperty("http_port", "10088")));
+        Promise.PromiseConsumer<ConcurrentMap<FSEditLogOpCodes, EditLogTailer.FSOpStat>> http_stat_listener = startHTTPServer(Integer.valueOf(properties.getProperty("http_port", "10088")));
 
         new EditLogTailer(
                 new EditLogArchive(new File(properties.getOrDefault("storage", "__storage__").toString())),
@@ -121,7 +122,9 @@ public class TailingService {
                 },
                 RenameOldOpSerializer::lineSerialize,
                 (stat) -> {
-                    LOGGER.info("stat:" + stat);
+                    stat.forEach((key, value) -> {
+                        LOGGER.info("stat:" + key + " value:" + value);
+                    });
                     http_stat_listener.accept(stat);
                 }
         ).start(Long.valueOf(properties.getOrDefault("poll_period", "" + TimeUnit.MINUTES.toMillis(1)).toString()),

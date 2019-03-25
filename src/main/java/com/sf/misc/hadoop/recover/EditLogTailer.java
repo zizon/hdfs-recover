@@ -60,10 +60,10 @@ public class EditLogTailer {
     protected final Predicate<FSEditLogOp> op_filter;
     protected final Promise.PromiseFunction<FSEditLogOp, byte[]> line_serializer;
     protected final AtomicLong last_txid;
-    protected final Promise.PromiseConsumer<FSOpStat> stat_update_listener;
+    protected final Promise.PromiseConsumer<ConcurrentMap<FSEditLogOpCodes, FSOpStat>> stat_update_listener;
     protected ConcurrentMap<FSEditLogOpCodes, FSOpStat> stat;
 
-    public EditLogTailer(EditLogArchive archive, LogAggregator aggregator, Predicate<FSEditLogOp> op_filter, Promise.PromiseFunction<FSEditLogOp, byte[]> line_serializer, Promise.PromiseConsumer<FSOpStat> stat_update_listener) {
+    public EditLogTailer(EditLogArchive archive, LogAggregator aggregator, Predicate<FSEditLogOp> op_filter, Promise.PromiseFunction<FSEditLogOp, byte[]> line_serializer, Promise.PromiseConsumer<ConcurrentMap<FSEditLogOpCodes, FSOpStat>> stat_update_listener) {
         this.aggregator = aggregator;
         this.archive = archive;
         this.op_filter = op_filter;
@@ -88,10 +88,7 @@ public class EditLogTailer {
                         stat = new_stat;
 
                         // notify
-                        new_stat.values().parallelStream()
-                                .filter((stat) -> stat.start != HdfsConstants.INVALID_TXID)
-                                .forEach(stat_update_listener);
-
+                        stat_update_listener.accept(new_stat);
                         return null;
                     }).join();
                     return;
