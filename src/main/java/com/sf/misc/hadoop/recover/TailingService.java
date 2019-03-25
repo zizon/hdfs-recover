@@ -59,7 +59,6 @@ public class TailingService {
                                 .addLast(new SimpleChannelInboundHandler<HttpObject>() {
                                     @Override
                                     protected void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
-                                        LOGGER.info(msg);
                                         if (msg instanceof HttpRequest) {
                                             ByteBuf buf = ctx.alloc().buffer();
                                             byte[] serialized = supplier.get().map((value) -> new Gson().toJson(value))
