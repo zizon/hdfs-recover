@@ -13,6 +13,9 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultLastHttpContent;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -56,13 +59,16 @@ public class TailingService {
                                 .addLast(new SimpleChannelInboundHandler<HttpObject>() {
                                     @Override
                                     protected void channelRead0(ChannelHandlerContext ctx, HttpObject msg) throws Exception {
+                                        LOGGER.info(msg);
                                         if (msg instanceof HttpRequest) {
                                             ByteBuf buf = ctx.alloc().buffer();
                                             byte[] serialized = supplier.get().map((value) -> new Gson().toJson(value))
                                                     .orElse("{}")
                                                     .getBytes();
                                             buf.writeBytes(serialized);
-                                            ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf));
+                                            FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
+                                            HttpHeaders.setContentLength(response, buf.readableBytes());
+                                            ctx.writeAndFlush(response);
                                             return;
                                         }
                                     }
