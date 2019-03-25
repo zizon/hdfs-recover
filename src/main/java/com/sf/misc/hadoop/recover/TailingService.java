@@ -94,7 +94,7 @@ public class TailingService {
             LOGGER.info("using config:" + key + " = " + value);
         });
 
-        Promise.PromiseConsumer<EditLogTailer.FSOpStat> http_stat_listener = startHTTPServer(Integer.valueOf(properties.getProperty("http_port", "100888")));
+        Promise.PromiseConsumer<EditLogTailer.FSOpStat> http_stat_listener = startHTTPServer(Integer.valueOf(properties.getProperty("http_port", "10088")));
 
         new EditLogTailer(
                 new EditLogArchive(new File(properties.getOrDefault("storage", "__storage__").toString())),
