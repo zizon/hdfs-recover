@@ -143,23 +143,12 @@ public class FSEditLogOpSniper {
         return holder;
     }
 
-    protected static List<String> fields(Class<? extends FSEditLogOp> type) {
-        return OP_FIELD_CACHE.getUnchecked(type);
-    }
 
-    protected static FSEditLogOp create(FSEditLogOp template) {
-        try {
-            return (FSEditLogOp) OP_CONSTRUCTOR.getUnchecked(template.getClass()).invoke();
-        } catch (Throwable throwable) {
-            throw new RuntimeException("fail to clone template:" + template, throwable);
-        }
-    }
-
-    protected static Object get(FSEditLogOp op, String field) {
+    public static <T> T get(FSEditLogOp op, String field) {
         String key = op.getClass().getName() + field;
 
         try {
-            return OP_FIELD_GETTER.get(key, () -> {
+            return (T) OP_FIELD_GETTER.get(key, () -> {
                 Field hit = searchField(op.getClass(), field);
                 hit.setAccessible(true);
 
@@ -171,7 +160,7 @@ public class FSEditLogOpSniper {
         }
     }
 
-    protected static void set(FSEditLogOp op, String field, Object value) {
+    public static void set(FSEditLogOp op, String field, Object value) {
         String key = op.getClass().getName() + field;
 
         try {
@@ -184,6 +173,18 @@ public class FSEditLogOpSniper {
             }).invoke(op, value);
         } catch (Throwable throwable) {
             throw new RuntimeException("fail to get filed:" + field + " of:" + op, throwable);
+        }
+    }
+
+    protected static List<String> fields(Class<? extends FSEditLogOp> type) {
+        return OP_FIELD_CACHE.getUnchecked(type);
+    }
+
+    protected static FSEditLogOp create(FSEditLogOp template) {
+        try {
+            return (FSEditLogOp) OP_CONSTRUCTOR.getUnchecked(template.getClass()).invoke();
+        } catch (Throwable throwable) {
+            throw new RuntimeException("fail to clone template:" + template, throwable);
         }
     }
 

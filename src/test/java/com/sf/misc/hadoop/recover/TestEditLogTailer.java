@@ -18,9 +18,10 @@ public class TestEditLogTailer {
         URI nameservice = URI.create("test-cluster://10.202.77.200:8020,10.202.77.201:8020");
         File storage = new File("__storage__");
 
+
         new EditLogTailer(
-                storage,
-                new NamenodeRPC(nameservice, "hdfs"),
+                new EditLogArchive(storage),
+                new LogAggregator(new NamenodeRPC(nameservice, "hdfs"), true),
                 (op) -> {
                     // reject not rename op
                     if (op.opCode.compareTo(FSEditLogOpCodes.OP_RENAME_OLD) != 0) {
@@ -34,7 +35,6 @@ public class TestEditLogTailer {
                     return true;
                 },
                 RenameOldOpSerializer::lineSerialize,
-                true,
                 (stat) -> {
                     LOGGER.info("stat:" + stat);
                 }

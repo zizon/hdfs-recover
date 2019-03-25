@@ -48,11 +48,11 @@ public class TailingService {
         });
 
         new EditLogTailer(
-                new File(properties.getOrDefault("storage", "__storage__").toString()),
-                new NamenodeRPC(
+                new EditLogArchive(new File(properties.getOrDefault("storage", "__storage__").toString())),
+                new LogAggregator(new NamenodeRPC(
                         URI.create(properties.get("nameservice").toString()),
                         properties.getProperty("runas", "hdfs")
-                ),
+                ), true),
                 (op) -> {
                     // reject not rename op
                     if (op.opCode.compareTo(FSEditLogOpCodes.OP_RENAME_OLD) != 0) {
@@ -66,7 +66,6 @@ public class TailingService {
                     return true;
                 },
                 RenameOldOpSerializer::lineSerialize,
-                true,
                 (stat) -> {
                     LOGGER.info("stat:" + stat);
                 }

@@ -63,9 +63,9 @@ public class EditLogTailer {
     protected final Promise.PromiseConsumer<FSOpStat> stat_update_listener;
     protected ConcurrentMap<FSEditLogOpCodes, FSOpStat> stat;
 
-    public EditLogTailer(File log_storage, NamenodeRPC namenode, Predicate<FSEditLogOp> op_filter, Promise.PromiseFunction<FSEditLogOp, byte[]> line_serializer, boolean in_progress_ok, Promise.PromiseConsumer<FSOpStat> stat_update_listener) {
-        this.aggregator = new LogAggregator(namenode, in_progress_ok);
-        this.archive = new EditLogArchive(log_storage);
+    public EditLogTailer(EditLogArchive archive, LogAggregator aggregator, Predicate<FSEditLogOp> op_filter, Promise.PromiseFunction<FSEditLogOp, byte[]> line_serializer, Promise.PromiseConsumer<FSOpStat> stat_update_listener) {
+        this.aggregator = aggregator;
+        this.archive = archive;
         this.op_filter = op_filter;
         this.line_serializer = line_serializer;
         this.last_txid = new AtomicLong(HdfsConstants.INVALID_TXID);

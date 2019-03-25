@@ -5,6 +5,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -12,6 +13,8 @@ import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.Iterator;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -22,30 +25,9 @@ public class ReverseReplay {
 
     protected final EditLogArchive archive;
     protected final FileSystem fs;
-    protected final RenameInterceptor interceptor;
+    protected final ResolvableRecover.RecoverInterceptor interceptor;
 
-    public interface RenameInterceptor {
-
-        default boolean dryrun() {
-            return true;
-        }
-
-        default Path transformSource(Path source) {
-            return source;
-        }
-
-        default Path transformTarget(Path target) {
-            return target;
-        }
-
-        default void onRenameFail(RenameOldOpSerializer.Rename op, Throwable reason) {
-        }
-
-        default void onRenameOk(RenameOldOpSerializer.Rename op) {
-        }
-    }
-
-    public ReverseReplay(EditLogArchive archive, FileSystem fs, RenameInterceptor interceptor) {
+    public ReverseReplay(EditLogArchive archive, FileSystem fs, ResolvableRecover.RecoverInterceptor interceptor) {
         this.archive = archive;
         this.interceptor = interceptor;
         this.fs = fs;
@@ -75,13 +57,31 @@ public class ReverseReplay {
         }).parallel().map((op) -> {
             return reverse(op).transform((ok) -> {
                 if (!ok) {
-                    interceptor.onRenameFail(op, null);
+                    interceptor.onRenameFail(new WriteEditLogOP(
+                            FSEditLogOpCodes.OP_RENAME_OLD,
+                            op.txid(),
+                            op.timestamp(),
+                            new Path(op.source()),
+                            new Path(op.target())
+                    ), null);
                 }
 
-                interceptor.onRenameOk(op);
+                interceptor.onRenameOk(new WriteEditLogOP(
+                        FSEditLogOpCodes.OP_RENAME_OLD,
+                        op.txid(),
+                        op.timestamp(),
+                        new Path(op.source()),
+                        new Path(op.target())
+                ));
                 return null;
             }).catching((throwable) -> {
-                interceptor.onRenameFail(op, throwable);
+                interceptor.onRenameFail(new WriteEditLogOP(
+                        FSEditLogOpCodes.OP_RENAME_OLD,
+                        op.txid(),
+                        op.timestamp(),
+                        new Path(op.source()),
+                        new Path(op.target())
+                ), throwable);
             });
         }).collect(Promise.collector())
                 .transform((ignore) -> true);
@@ -247,11 +247,11 @@ public class ReverseReplay {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws ParseException {
         if (args.length != 4) {
             System.out.println("example: \n"
                     + "dryrun: java " + ReverseReplay.class.getName() + " test-cluster://10.202.77.200:8020,10.202.77.201:8020 false 20190318000000 20190318201532 \n"
-                    + "move: java " + ReverseReplay.class.getName() + " test-cluster://10.202.77.200:8020,10.202.77.201:8020 false 20190318000000 20190318201532 \n"
+                    + "move: java " + ReverseReplay.class.getName() + " test-cluster://10.202.77.200:8020,10.202.77.201:8020 true 20190318000000 20190318201532 \n"
             );
 
             return;
@@ -260,41 +260,59 @@ public class ReverseReplay {
         File storage = new File("__storage__");
         URI nameservice = URI.create(args[0]);
         boolean dryrun = Boolean.parseBoolean(args[1]);
-        long from = Long.parseLong(args[2]);
-        long to = Long.parseLong(args[3]);
 
-        ReverseReplay.RenameInterceptor interceptor = new ReverseReplay.RenameInterceptor() {
+        SimpleDateFormat format = new SimpleDateFormat("yyyyMMddHHmmss");
+        long from = format.parse(args[2]).getTime();
+        long to = format.parse(args[3]).getTime();
+
+        ResolvableRecover.RecoverInterceptor interceptor = new ResolvableRecover.RecoverInterceptor() {
             @Override
             public boolean dryrun() {
                 return dryrun;
             }
 
             @Override
-            public void onRenameFail(RenameOldOpSerializer.Rename op, Throwable reason) {
+            public void onRenameFail(WriteEditLogOP op, Throwable reason) {
                 System.out.println("replay fail of op: " + op);
             }
 
             @Override
-            public void onRenameOk(RenameOldOpSerializer.Rename op) {
+            public void onRenameOk(WriteEditLogOP op) {
                 System.out.println("replay ok of op: " + op);
             }
         };
 
-        boolean ok = new NamenodeRPC(nameservice, "hdfs").fs()
-                .transform((fs) -> {
-                    return new ReverseReplay(
-                            new EditLogArchive(storage),
-                            fs,
-                            interceptor
-                    );
-                }).transformAsync((replay) -> replay.forRange(from, to))
-                .catching((reason) -> {
-                    reason.printStackTrace();
-                })
-                .maybe()
-                .orElse(false);
+        NamenodeRPC namendoe = new NamenodeRPC(nameservice, "hdfs");
+        LogAggregator aggregator = new LogAggregator(namendoe, true);
+        EditLogArchive archive = new EditLogArchive(storage);
 
-        System.out.println("replay:" + ok);
+        Promise<?> tailing = new EditLogTailer(
+                archive,
+                aggregator,
+                (op) -> op.opCode.compareTo(FSEditLogOpCodes.OP_RENAME_OLD) == 0,
+                RenameOldOpSerializer::lineSerialize,
+                (stat) -> {
+                    //LOGGER.info("stat:" + stat);
+                }
+        ).start(1, TimeUnit.DAYS.toMillis(365));
+
+
+        namendoe.fs().transform((fs) -> {
+            return new ResolvableRecover(
+                    aggregator,
+                    archive,
+                    interceptor,
+                    fs
+            );
+        }).transformAsync((recover) -> {
+            return recover.replay(from, to);
+        }).join();
+
+        LOGGER.info("done");
+        tailing.cancel(true);
+        tailing.maybe();
+        LOGGER.info("all finished");
+
         System.exit(0);
     }
 }

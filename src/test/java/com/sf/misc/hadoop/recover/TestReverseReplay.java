@@ -2,14 +2,11 @@ package com.sf.misc.hadoop.recover;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.junit.Test;
 
 import java.io.File;
 import java.net.URI;
-import java.util.concurrent.locks.LockSupport;
 
 public class TestReverseReplay {
 
@@ -29,7 +26,7 @@ public class TestReverseReplay {
         }).join();
         */
 
-        ReverseReplay.RenameInterceptor interceptor = new ReverseReplay.RenameInterceptor() {
+        ResolvableRecover.RecoverInterceptor interceptor = new ResolvableRecover.RecoverInterceptor() {
             @Override
             public Path transformTarget(Path target) {
                 Path base = new Path("/tmp/recover_test");
