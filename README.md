@@ -159,8 +159,9 @@ nohup java $JVM_OPTIONS -cp .:hdfs-recover/* com.sf.misc.hadoop.recover.TailingS
 cd $save_dir
 ```
 
-4. recover
+# recover
 in case one need to replay editlog between ,said [from,to] ,launch *com.sf.misc.hadoop.recover.ReverseReplay*.
+
 ```bash
 # with test-cluster as what it said in EditlogTailer.
 # false indicate not actually running reverse replay(means move .Trash files&directory back to where they belongs, before moveing to trash), but print the move that will apply.
