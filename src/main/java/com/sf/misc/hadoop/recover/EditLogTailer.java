@@ -120,17 +120,16 @@ public class EditLogTailer {
                                         ;
                             });
 
-                            return op;
-                        })
-                        .filter(op_filter)
-                        .map((op) -> {
-                            try {
-                                OutputStream stream = archive.streamForOp(op).join();
-                                stream.write(line_serializer.apply(op));
-                                stream.flush();
-                            } catch (IOException e) {
-                                last_txid.set(HdfsConstants.INVALID_TXID);
-                                throw new UncheckedIOException("fail to write op:" + op, e);
+                            // less tailing
+                            if (op_filter.test(op)) {
+                                try {
+                                    OutputStream stream = archive.streamForOp(op).join();
+                                    stream.write(line_serializer.apply(op));
+                                    stream.flush();
+                                } catch (IOException e) {
+                                    last_txid.set(HdfsConstants.INVALID_TXID);
+                                    throw new UncheckedIOException("fail to write op:" + op, e);
+                                }
                             }
 
                             return op.getTransactionId();
