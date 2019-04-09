@@ -259,7 +259,7 @@ public class ReverseReplay {
 
         File storage = new File("__storage__");
         URI nameservice = URI.create(args[0]);
-        boolean dryrun = Boolean.parseBoolean(args[1]);
+        boolean dryrun = !Boolean.parseBoolean(args[1]);
 
         SimpleDateFormat format = new SimpleDateFormat("yyyyMMddHHmmss");
         long from = format.parse(args[2]).getTime();
