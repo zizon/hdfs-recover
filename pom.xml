@@ -6,7 +6,7 @@
 
     <groupId>com.sf.misc.hadoop</groupId>
     <artifactId>hdfs-recover</artifactId>
-    <version>0.0.3-SNAPSHOT</version>
+    <version>0.0.4-SNAPSHOT</version>
 
     <properties>
         <hadoop-version>2.7.3</hadoop-version>

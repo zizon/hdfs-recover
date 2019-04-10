@@ -122,7 +122,7 @@ public class ResolvableRecover {
             // source exits,and see if target exits?
             if (fs.exists(target)) {
                 // resolve conflit?
-                return resolveConflict(source, target);
+                return resolveConflict(source, target, txid);
             }
 
             // then preserve directory and try agtain
@@ -154,7 +154,7 @@ public class ResolvableRecover {
         );
     }
 
-    protected Promise<Boolean> resolveConflict(Path source, Path target) {
+    protected Promise<Boolean> resolveConflict(Path source, Path target, long txid) {
         Promise<FileStatus> source_status = Promise.light(() -> fs.getFileStatus(source));
         Promise<FileStatus> target_status = Promise.light(() -> fs.getFileStatus(target));
 
@@ -171,17 +171,9 @@ public class ResolvableRecover {
                     }
 
                     // source newer
-                    return Promise.light(() -> {
-                        Path conflict_resovled = new Path(target.getParent(), ".conflicted." + UUID.randomUUID() + "." + target.getName());
-                        if (fs.rename(target, conflict_resovled)) {
-                            fs.rename(source, target);
-
-                            // for concurrent process,assume ok if source is moved
-                            return !fs.exists(source);
-                        }
-
-                        return false;
-                    });
+                    Path conflict_resovled = new Path(target.getParent(), ".conflicted." + UUID.randomUUID() + "." + target.getName());
+                    fs.rename(target, conflict_resovled);
+                    return move(source, target, txid);
                 });
     }
 
