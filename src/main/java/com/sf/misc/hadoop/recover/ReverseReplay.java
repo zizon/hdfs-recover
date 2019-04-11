@@ -5,6 +5,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 
 import java.io.BufferedReader;
@@ -296,17 +297,13 @@ public class ReverseReplay {
                 }
         ).start(1, TimeUnit.DAYS.toMillis(365));
 
-
-        namendoe.fs().transform((fs) -> {
-            return new ResolvableRecover(
-                    aggregator,
-                    archive,
-                    interceptor,
-                    fs
-            );
-        }).transformAsync((recover) -> {
-            return recover.replay(from, to);
-        }).join();
+        new ResolvableRecover(
+                aggregator,
+                archive,
+                interceptor,
+                namendoe.fs().join(),
+                namendoe.client().join()
+        ).replay(from, to).join();
 
         LOGGER.info("done");
         tailing.cancel(true);

@@ -37,7 +37,11 @@ public class TestResolvableRecover {
                 }
         ).start(1, TimeUnit.DAYS.toMillis(365));
 
-        namendoe.fs().transform((fs) -> {
+        Promise.light(() -> {
+            SimpleDateFormat format = new SimpleDateFormat("yyyyMMddHHmmss");
+            long start = format.parse("20190322000000").getTime();
+            long end = format.parse("20190901000000").getTime();
+
             return new ResolvableRecover(
                     aggregator,
                     archive,
@@ -66,14 +70,10 @@ public class TestResolvableRecover {
                             //LOGGER.info("ok op:" +op);
                         }
                     },
-                    fs
-            );
-        }).transformAsync((recover) -> {
-            SimpleDateFormat format = new SimpleDateFormat("yyyyMMddHHmmss");
-            long start = format.parse("20190322000000").getTime();
-            long end = format.parse("20190901000000").getTime();
-            return recover.replay(start, end);
-        }).join();
+                    namendoe.fs().join(),
+                    namendoe.client().join()
+            ).replay(start, end);
+        }).transformAsync((through) -> through).join();
 
         LOGGER.info("done");
         tailing.cancel(true);

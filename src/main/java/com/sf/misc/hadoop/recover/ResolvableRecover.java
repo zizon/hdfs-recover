@@ -2,15 +2,19 @@ package com.sf.misc.hadoop.recover;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Options;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOpCodes;
 
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
+import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.AbstractMap;
 import java.util.Comparator;
@@ -51,13 +55,15 @@ public class ResolvableRecover {
     protected final NavigableSet<WriteEditLogOP> ops;
     protected final RecoverInterceptor interceptor;
     protected final FileSystem fs;
+    protected final DFSClient client;
     protected boolean terminated;
 
 
-    public ResolvableRecover(LogAggregator aggregator, EditLogArchive archive, RecoverInterceptor interceptor, FileSystem fs) {
+    public ResolvableRecover(LogAggregator aggregator, EditLogArchive archive, RecoverInterceptor interceptor, FileSystem fs, DFSClient client) {
         this.terminated = false;
         this.interceptor = interceptor;
         this.fs = fs;
+        this.client = client;
         this.ops = new ConcurrentSkipListSet<>(Comparator.comparing(WriteEditLogOP::txid));
         loadEditlogs(archive);
         starPolling(aggregator);
@@ -94,6 +100,15 @@ public class ResolvableRecover {
         });
     }
 
+    protected boolean rename(Path source, Path target) {
+        try {
+            client.rename(source.toString(), target.toString(), Options.Rename.NONE);
+            return true;
+        } catch (IOException exists) {
+            return false;
+        }
+    }
+
     protected Promise<Boolean> move(Path source, Path target, long txid) {
         return Promise.light(() -> {
             LOGGER.info("try move:" + source + " to target:" + target);
@@ -101,12 +116,12 @@ public class ResolvableRecover {
                 return Promise.success(true);
             }
 
-            // try direct move
-            if (fs.rename(source, target)) {
+            // try direct move,use rename2 api
+            if (rename(source, target)) {
+                LOGGER.info("reanme source:" + source + " to target:" + target + " ok");
                 return Promise.success(true);
             }
 
-            // fail, source not exist
             if (!fs.exists(source)) {
                 // source may have been move,try find current
                 Promise<Optional<Map.Entry<Long, Path>>> current = findCurrent(txid, source);
@@ -119,9 +134,11 @@ public class ResolvableRecover {
                 });
             }
 
+
             // source exits,and see if target exits?
             if (fs.exists(target)) {
                 // resolve conflit?
+                LOGGER.info("conlift? source:" + source + " target:" + target);
                 return resolveConflict(source, target, txid);
             }
 
@@ -155,6 +172,11 @@ public class ResolvableRecover {
     }
 
     protected Promise<Boolean> resolveConflict(Path source, Path target, long txid) {
+        if (source.equals(target)) {
+            // special case,when invoke in a findCurrent context
+            return Promise.success(true);
+        }
+
         Promise<FileStatus> source_status = Promise.light(() -> fs.getFileStatus(source));
         Promise<FileStatus> target_status = Promise.light(() -> fs.getFileStatus(target));
 
@@ -166,39 +188,68 @@ public class ResolvableRecover {
                     if (to.getModificationTime() > from.getModificationTime()) {
                         // target newwer,assume ok
                         Path conlift_resolved = new Path(target.getParent(), ".conflicted." + UUID.randomUUID() + "." + target.getName());
-                        fs.rename(source, conlift_resolved);
+                        this.rename(source, conlift_resolved);
+                        LOGGER.info("target is newwer,give up source:" + source + " target:" + target + " resolved:" + conlift_resolved);
                         return Promise.success(true);
                     }
 
                     // source newer
                     Path conflict_resovled = new Path(target.getParent(), ".conflicted." + UUID.randomUUID() + "." + target.getName());
-                    fs.rename(target, conflict_resovled);
+                    // make target as conflicted
+                    if (this.rename(target, conflict_resovled)) {
+                        LOGGER.info("should tabke over,reanme target:" + target + " to:" + conflict_resovled + " source:" + source);
+                        // target *SHOULD* had bean move,
+                        // try move source to target as accomplished.
+                        if (this.rename(source, target)) {
+                            // fine,resolve
+                            LOGGER.info("take over ok, source:" + source + " target:" + target);
+                            return Promise.success(true);
+                        }
+
+                        //  target status change,may pointing to another file,
+                        // try from scratch
+                        LOGGER.info("take over fail,souce:" + source + " target:" + target + " try again");
+                        return move(source, target, txid);
+                    }
+
+                    // maybe target not exists,or we should had succeed
+                    LOGGER.info("take over fail,try rename directryly,source:" + source + " target:" + target);
+                    if (this.rename(source, target)) {
+                        // fine
+                        LOGGER.info("after take over fail,rename:" + source + " to :" + target);
+                        return Promise.success(true);
+                    }
+
+                    // or,fail to move source to target,
+                    // maybe something had change,try from scratch.
+                    LOGGER.info("no ideal,simpel try again,source:" + source + " target:" + target);
                     return move(source, target, txid);
                 });
     }
 
     protected Promise<Boolean> preserveDirecotry(Path source, Path target) {
         return Promise.light(() -> {
-            if (fs.exists(target)) {
+            Path target_parent = target.getParent();
+            if (target_parent == null || fs.exists(target_parent)) {
                 return Promise.success(true);
             }
 
-            // target not exitst
+            // target parent not exitst
             return preserveDirecotry(source.getParent(), target.getParent())
-                    .transform((parent_ok) -> {
-                        if (!parent_ok) {
+                    .transform((grand_parent) -> {
+                        if (!grand_parent) {
                             return false;
                         }
 
-                        // parent ok
-                        if (fs.isDirectory(source)) {
-                            FileStatus status = fs.getFileStatus(source);
-                            fs.mkdirs(target, status.getPermission());
-
-                            return fs.exists(target);
+                        // grand parent ok
+                        FileStatus status = fs.getFileStatus(source.getParent());
+                        if (status == null) {
+                            return false;
                         }
 
-                        return true;
+                        // then copy parent
+                        fs.mkdirs(target.getParent(), status.getPermission());
+                        return fs.exists(target.getParent());
                     });
 
         }).transformAsync((through) -> through);

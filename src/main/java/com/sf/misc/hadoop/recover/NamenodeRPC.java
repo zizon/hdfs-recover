@@ -5,6 +5,7 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.NameNodeProxies;
@@ -30,6 +31,7 @@ public class NamenodeRPC implements AutoCloseable {
     protected final Promise.PromiseFunction<Class<?>, Promise<Object>> protocol_provider;
     protected final Promise<Configuration> configuration;
     protected final Promise<FileSystem> fs;
+    protected final Promise<DFSClient> client;
 
     public NamenodeRPC(URI nameservice, String runas) {
         protocol_provider = (protocol) -> {
@@ -46,6 +48,19 @@ public class NamenodeRPC implements AutoCloseable {
             return Promise.success(
                     doas(
                             () -> FileSystem.get(generateHdfsHAConfiguration(nameservice)),
+                            runas
+                    )
+            );
+        });
+
+        this.client = Promise.lazy(() -> {
+            return Promise.success(
+                    doas(
+                            () -> {
+                                Configuration configuration = generateHdfsHAConfiguration(nameservice);
+
+                                return new DFSClient(URI.create(configuration.get(CommonConfigurationKeys.FS_DEFAULT_NAME_KEY)), configuration);
+                            },
                             runas
                     )
             );
@@ -70,6 +85,10 @@ public class NamenodeRPC implements AutoCloseable {
 
     public Promise<FileSystem> fs() {
         return this.fs;
+    }
+
+    public Promise<DFSClient> client() {
+        return client;
     }
 
     @Override

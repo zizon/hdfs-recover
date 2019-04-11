@@ -42,11 +42,12 @@ public class TestReverseReplay {
             }
         };
 
-        namendoe.fs().transform((fs) -> {
+        Promise.all(namendoe.fs(), namendoe.client()).transform((ignore) -> {
             return new ReverseReplay(
                     new EditLogArchive(storage),
-                    fs,
+                    namendoe.fs().join(),
                     interceptor
+
             );
         }).transformAsync((replay) -> replay.forRange(0, Long.MAX_VALUE)).join();
     }
