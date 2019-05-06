@@ -16,11 +16,14 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.Optional;
@@ -34,9 +37,9 @@ public class EditLogArchive {
     protected static final String FILE_TIME_FORMAT = "yyyyMMddHH0000";
     protected static final String FILE_TIME_PARSE = "yyyyMMddHHmmss";
 
-    protected static final LoadingCache<File, OutputStream> STREAM_CACHE = CacheBuilder.newBuilder()
+    protected static final LoadingCache<URI, OutputStream> STREAM_CACHE = CacheBuilder.newBuilder()
             .expireAfterAccess(5, TimeUnit.MINUTES)
-            .removalListener((RemovalListener<File, OutputStream>) (notice) -> {
+            .removalListener((RemovalListener<URI, OutputStream>) (notice) -> {
                 LOGGER.info("close stream:" + notice.getKey());
                 Optional.ofNullable(notice.getValue()).ifPresent((stream) -> {
                     try {
@@ -46,12 +49,13 @@ public class EditLogArchive {
                     }
                 });
             })
-            .build(new CacheLoader<File, OutputStream>() {
+            .build(new CacheLoader<URI, OutputStream>() {
                 @Override
-                public OutputStream load(File key) throws Exception {
-                    LOGGER.info("create stream:" + key);
-                    key.getParentFile().mkdirs();
-                    return new FileOutputStream(key, true);
+                public OutputStream load(URI uri) throws Exception {
+                    LOGGER.info("create stream:" + uri);
+                    File file = new File(uri);
+                    file.getParentFile().mkdirs();
+                    return new FileOutputStream(file, true);
                 }
             });
 
@@ -136,7 +140,7 @@ public class EditLogArchive {
                 + new SimpleDateFormat("yyyyMMddHH0000").format(new Date(timestamp));
 
         File candidate = new File(storage, name);
-        return Promise.light(() -> STREAM_CACHE.get(candidate));
+        return Promise.light(() -> STREAM_CACHE.get(candidate.toURI()));
     }
 
     public File locateFileForTimestamp(long timestamp) {
@@ -144,15 +148,13 @@ public class EditLogArchive {
     }
 
     public Collection<EditLogStat> listEditLogs() {
-        try {
-            return Files.list(storage.toPath()).parallel()
-                    .map(Path::toFile)
-                    .filter((file) -> file.getName().startsWith(EDITLOG_PREFIX))
-                    .map(EditLogStat::new)
-                    .collect(Collectors.toList());
-        } catch (IOException e) {
-            throw new UncheckedIOException("fail to list storage:" + storage, e);
-        }
+        return Optional.ofNullable(storage.listFiles(
+                (dir, name) -> name.startsWith(EDITLOG_PREFIX)
+        )).map((files) ->
+                Arrays.stream(files)
+                        .map(EditLogStat::new)
+                        .collect(Collectors.toList())
+        ).orElse(Collections.emptyList());
     }
 
     public EditLogStat latest() {
